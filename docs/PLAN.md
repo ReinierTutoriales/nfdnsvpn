@@ -93,3 +93,28 @@ modificadores (`$third-party`…) o cosméticas se ignoran: sin descifrar no se 
 - Una app con IP fija hacia un resolvedor que no esté en la lista de resolvedores conocidos se
   salta el filtro hasta la fase 3.
 - Solo hay una VPN a la vez en Android: si hay otra activa, se desconecta.
+- DNS sobre TCP hacia el resolvedor virtual recibe RST (no hay pila TCP hasta la fase 2). Solo se
+  usa cuando una respuesta UDP llega truncada, algo raro con EDNS.
+
+## Decisiones de la fase 1
+
+| Tema | Decisión | Motivo |
+|---|---|---|
+| Nombre y paquete | "VireoLuma Shield" (provisional), `com.reiniertutoriales.nfdnsvpn` | — |
+| DNS de subida | El de la red real (router); si no anuncia ninguno, Quad9 | La app se excluye de la VPN, así que ve la red real |
+| Respuesta de bloqueo | `0.0.0.0` / `::` con TTL de 60 s; vacía para otros tipos | Un cambio de lista llega a las apps en un minuto |
+| Resolvedores públicos | Sus IPs van al túnel; DNS se filtra, TCP recibe RST, QUIC se descarta | Cierra el DNS fijo y el DoT/DoH hacia ellos desde la fase 1 |
+| Red medida | `setMetered(false)` | Desde Android 10 una VPN es medida por defecto y las apps de vídeo bajan la calidad |
+| Servicio en primer plano | Tipo `specialUse` | `systemExempted` no se pudo verificar en el código de Android; `specialUse` no tiene requisitos en tiempo de ejecución |
+| Arranque al encender | "VPN siempre activa" de Android; receptor propio en la fase 5 | — |
+
+## Medidas del núcleo (fase 1, PC x86_64)
+
+| Medida | Valor |
+|---|---|
+| Dominios únicos (AdGuard DNS + HaGeZi Pro) | 300 782 |
+| Memoria del filtro compilado | 6,8 MB |
+| Tiempo de compilación de las listas | ~0,17 s |
+| Tiempo por consulta | ~0,3 µs |
+
+En la onn el procesador es más lento: hay que repetir la medida en la fase 6.

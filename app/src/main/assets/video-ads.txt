@@ -1,0 +1,12 @@
+! nfdnsvpn: video ad servers used by apps that insert ads on the client (CSAI).
+! Kept because the default lists miss them or only list some subdomains.
+! If a player refuses to start, exclude that app; do not remove entries here.
+||doubleclick.net^
+||imasdk.googleapis.com^
+||fwmrm.net^
+||spotx.tv^
+||spotxchange.com^
+||innovid.com^
+||springserve.com^
+||googlesyndication.com^
+||googleadservices.com^

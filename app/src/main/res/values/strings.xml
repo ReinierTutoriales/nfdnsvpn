@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VireoLuma Shield</string>
+    <string name="action_start">Activar protección</string>
+    <string name="action_stop">Desactivar protección</string>
+    <string name="status_stopped">Protección desactivada</string>
+    <string name="status_starting">Cargando listas…</string>
+    <string name="status_running">Protegiendo todas las apps (modo ligero: DNS)</string>
+    <string name="stats">Dominios en las listas: %1$d\nConsultas: %2$d · Bloqueadas: %3$d</string>
+    <string name="error_prefix">Error: %1$s</string>
+    <string name="error_no_permission">No se concedió el permiso de VPN</string>
+    <string name="warning_private_dns">El DNS privado del sistema está en modo estricto (%1$s) y se salta el filtro. Desactívalo en Ajustes › Red e Internet › DNS privado.</string>
+    <string name="lists_title">Listas</string>
+    <string name="list_missing">sin descargar</string>
+    <string name="list_update_failed">no se pudo actualizar (%1$s)</string>
+    <string name="recent_title">Últimos dominios bloqueados</string>
+    <string name="recent_empty">Ninguno todavía</string>
+    <string name="notification_channel">Protección activa</string>
+    <string name="notification_text">Bloqueando anuncios y rastreadores en todas las apps</string>
+</resources>
