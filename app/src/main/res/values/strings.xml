@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">VireoLuma Shield</string>
+    <string name="app_name">NF DNS VPN</string>
     <string name="action_start">Activar protección</string>
     <string name="action_stop">Desactivar protección</string>
     <string name="status_stopped">Protección desactivada</string>

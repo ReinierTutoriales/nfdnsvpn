@@ -2,7 +2,7 @@
 
 Bloqueador de anuncios y rastreadores para **toda la TV** (Android TV / Google TV) mediante una
 VPN local. Todo se hace en el dispositivo: sin servidor, sin cuentas, sin root y sin descifrar
-HTTPS. En el lanzador aparece como **VireoLuma Shield** (nombre provisional).
+HTTPS. En el lanzador aparece como **NF DNS VPN**.
 
 Premisas, arquitectura y fases: [`docs/PLAN.md`](docs/PLAN.md).
 
@@ -22,8 +22,8 @@ Premisas, arquitectura y fases: [`docs/PLAN.md`](docs/PLAN.md).
 1. Abre la pestaña **Actions** del repositorio, entra en la última ejecución verde de **CI** y
    descarga el artefacto `nfdnsvpn-debug`. Dentro está `app-debug.apk`.
 2. Instálalo con `adb install -r app-debug.apk` o con una app como Downloader / Send Files to TV.
-3. Abre **VireoLuma Shield**, pulsa **Activar protección** y acepta el aviso de VPN de Android.
-4. Para que arranque sola al encender la TV: Ajustes › Red e Internet › VPN › VireoLuma Shield ›
+3. Abre **NF DNS VPN**, pulsa **Activar protección** y acepta el aviso de VPN de Android.
+4. Para que arranque sola al encender la TV: Ajustes › Red e Internet › VPN › NF DNS VPN ›
    **VPN siempre activa**.
 5. Si el DNS privado del sistema está en modo estricto, desactívalo (la app lo avisa).
 

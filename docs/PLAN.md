@@ -1,9 +1,8 @@
 # nfdnsvpn — premisas y plan
 
 Bloqueador de anuncios y rastreadores para **toda la TV** (Android TV / Google TV, objetivo
-principal: onn 4K de 2 GB de RAM) mediante una VPN local (`VpnService`). Es una app aparte de
-VireoLumaTV: protege todas las apps aunque el navegador esté cerrado, y reutiliza su forma de
-compilar el núcleo Rust con el NDK y su descargador de listas.
+principal: onn 4K de 2 GB de RAM) mediante una VPN local (`VpnService`). Proyecto independiente: protege todas las apps
+instaladas sin depender de ningún navegador.
 
 ## Premisas
 
@@ -100,7 +99,7 @@ modificadores (`$third-party`…) o cosméticas se ignoran: sin descifrar no se 
 
 | Tema | Decisión | Motivo |
 |---|---|---|
-| Nombre y paquete | "VireoLuma Shield" (provisional), `com.reiniertutoriales.nfdnsvpn` | — |
+| Nombre y paquete | "NF DNS VPN", `com.reiniertutoriales.nfdnsvpn` | Proyecto independiente, mismo nombre que el repositorio |
 | DNS de subida | El de la red real (router); si no anuncia ninguno, Quad9 | La app se excluye de la VPN, así que ve la red real |
 | Respuesta de bloqueo | `0.0.0.0` / `::` con TTL de 60 s; vacía para otros tipos | Un cambio de lista llega a las apps en un minuto |
 | Resolvedores públicos | Sus IPs van al túnel; DNS se filtra, TCP recibe RST, QUIC se descarta | Cierra el DNS fijo y el DoT/DoH hacia ellos desde la fase 1 |

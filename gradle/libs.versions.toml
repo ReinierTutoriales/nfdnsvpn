@@ -1,5 +1,4 @@
 [versions]
-# Same toolchain as VireoLumaTV-browser.
 android-compileSdk = "37"
 android-compileSdkMinor = "1"
 android-minSdk = "24"

@@ -9,7 +9,7 @@ plugins {
 /** ABIs shipped with the Rust core. 32-bit x86 Android TV hardware does not exist. */
 val rustAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
 
-/** Compiles native/nfdns-core with the NDK toolchain (same scheme as VireoLumaTV). */
+/** Compiles native/nfdns-core with the NDK toolchain. */
 abstract class BuildRustCore : DefaultTask() {
     @get:InputFiles
     @get:PathSensitive(PathSensitivity.RELATIVE)
