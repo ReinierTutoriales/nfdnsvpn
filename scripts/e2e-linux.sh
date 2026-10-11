@@ -3,11 +3,13 @@
 # goes into the TUN (kernel-generated ones too, such as ACKs of closed sockets), while the
 # tunnel's own sockets go out directly:
 #
-#   ns "tv":  tun0 10.111.0.2, default route via tun0           <- the apps (curl, python)
-#   ns "gw":  linux_tun example holding tun0's fd, veth 192.0.2.2 <- the tunnel
-#   ns "srv": veth 192.0.2.1: HTTP :8080, HTTPS :8443, UDP echo :9999, fake DNS :53, nothing on :853
+#   ns "tv":  tun0 10.111.0.2 / fd00:6e66::2, default routes via tun0   <- the apps (curl, python)
+#   ns "gw":  linux_tun example holding tun0's fd, veth 192.0.2.2 / 2001:db8:1::2 <- the tunnel
+#   ns "srv": veth 192.0.2.1 / 2001:db8:1::1: HTTP :8080, HTTPS :8443, QUIC :443, UDP echo :9999,
+#             fake DNS :53, nothing on :853
 #
-# Needs root, iproute2, python3 and curl. Usage: sudo scripts/e2e-linux.sh
+# Needs root, iproute2, python3 (with aioquic for the QUIC checks) and curl.
+# Usage: sudo scripts/e2e-linux.sh
 # (or TUNNEL_BIN=<prebuilt linux_tun> sudo -E scripts/e2e-linux.sh)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -38,10 +40,16 @@ if [[ -z "${TUNNEL_BIN:-}" ]]; then
     TUNNEL_BIN=native/nfdns-core/target/release/examples/linux_tun
 fi
 
+# Some sandboxes run kernels without IPv6; the IPv6 checks are skipped there (CI has it).
+[[ -d /proc/sys/net/ipv6 ]] && HAS_IPV6=1 || HAS_IPV6=0
 for ns in "$TV" "$GW" "$SRV"; do ip netns add "$ns"; ip -n "$ns" link set lo up; done
 ip link add veth-gw netns "$GW" type veth peer name veth-srv netns "$SRV"
 gw ip addr add 192.0.2.2/24 dev veth-gw
 srv ip addr add 192.0.2.1/24 dev veth-srv
+if (( HAS_IPV6 )); then
+    gw ip addr add 2001:db8:1::2/64 dev veth-gw nodad
+    srv ip addr add 2001:db8:1::1/64 dev veth-srv nodad
+fi
 gw ip link set veth-gw up
 srv ip link set veth-srv up
 gw ip tuntap add dev tun0 mode tun
@@ -52,8 +60,8 @@ echo "hello through the tunnel" > "$WORK/small"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=e2e" -keyout "$WORK/key.pem" -out "$WORK/cert.pem" 2>/dev/null
 cat > "$WORK/servers.py" <<'EOF'
 import functools, http.server, os, socket, ssl, struct, sys, threading
-def udp_echo():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("192.0.2.1", 9999))
+def udp_echo(family, address):
+    s = socket.socket(family, socket.SOCK_DGRAM); s.bind((address, 9999))
     while True:
         data, peer = s.recvfrom(2048); s.sendto(data, peer)
 def encode(name):
@@ -83,8 +91,31 @@ def https():
     context.load_cert_chain(os.path.join(sys.argv[1], "cert.pem"), os.path.join(sys.argv[1], "key.pem"))
     server.socket = context.wrap_socket(server.socket, server_side=True)
     server.serve_forever()
-threading.Thread(target=udp_echo, daemon=True).start()
+def quic():
+    import asyncio
+    from aioquic.asyncio import serve
+    from aioquic.quic.configuration import QuicConfiguration
+    configuration = QuicConfiguration(is_client=False, alpn_protocols=["e2e"])
+    configuration.load_cert_chain(os.path.join(sys.argv[1], "cert.pem"), os.path.join(sys.argv[1], "key.pem"))
+    async def main():
+        await serve("192.0.2.1", 443, configuration=configuration)
+        await asyncio.Future()
+    asyncio.run(main())
+class HTTPServerV6(http.server.ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+def http_v6():
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[1])
+    HTTPServerV6(("2001:db8:1::1", 8080), handler).serve_forever()
+threading.Thread(target=udp_echo, args=(socket.AF_INET, "192.0.2.1"), daemon=True).start()
 threading.Thread(target=https, daemon=True).start()
+if socket.has_ipv6 and os.path.isdir("/proc/sys/net/ipv6"):
+    threading.Thread(target=udp_echo, args=(socket.AF_INET6, "2001:db8:1::1"), daemon=True).start()
+    threading.Thread(target=http_v6, daemon=True).start()
+try:
+    import aioquic  # optional: the QUIC checks are skipped without it
+    threading.Thread(target=quic, daemon=True).start()
+except ImportError:
+    pass
 fake_dns()
 EOF
 srv python3 "$WORK/servers.py" "$WORK" > /dev/null 2>&1 & PIDS+=($!)
@@ -99,6 +130,10 @@ ip -n "$GW" link set tun0 netns "$TV"
 tv ip addr add 10.111.0.2/32 dev tun0
 tv ip link set tun0 up
 tv ip route add default dev tun0
+if (( HAS_IPV6 )); then
+    tv ip addr add fd00:6e66::2/128 dev tun0 nodad
+    tv ip -6 route add default dev tun0
+fi
 [[ "$(cat /proc/$TUNNEL_PID/comm)" == linux_tun ]] || { echo "FAIL PID del túnel incorrecto"; exit 1; }
 
 cat > "$WORK/client.py" <<'EOF'
@@ -106,15 +141,39 @@ import socket, struct, sys, time
 def query(server, name):
     q = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
     q += b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00\x00\x01\x00\x01"
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+    s = socket.socket(socket.AF_INET6 if ":" in server else socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
     s.sendto(q, (server, 53)); r, _ = s.recvfrom(2048)
     return socket.inet_ntoa(r[-4:])
 cmd = sys.argv[1]
 if cmd == "dns":
     print(query(sys.argv[2], sys.argv[3]))
 elif cmd == "udp":
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
-    s.sendto(b"udp-ok", ("192.0.2.1", 9999)); print(s.recvfrom(2048)[0].decode())
+    server = sys.argv[2] if len(sys.argv) > 2 else "192.0.2.1"
+    s = socket.socket(socket.AF_INET6 if ":" in server else socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+    s.sendto(b"udp-ok", (server, 9999)); print(s.recvfrom(2048)[0].decode())
+elif cmd == "quic":
+    import asyncio, ssl
+    from aioquic.asyncio.protocol import QuicConnectionProtocol
+    from aioquic.quic.configuration import QuicConfiguration
+    from aioquic.quic.connection import QuicConnection
+    async def main():
+        configuration = QuicConfiguration(is_client=True, alpn_protocols=["e2e"], server_name=sys.argv[2])
+        configuration.verify_mode = ssl.CERT_NONE
+        # Plain IPv4 socket: aioquic's connect() always opens an IPv6 one.
+        transport, protocol = await asyncio.get_running_loop().create_datagram_endpoint(
+            lambda: QuicConnectionProtocol(QuicConnection(configuration=configuration)), local_addr=("0.0.0.0", 0))
+        try:
+            protocol.connect(("192.0.2.1", 443))
+            await protocol.wait_connected()
+            await protocol.ping()
+        finally:
+            protocol.close()
+            transport.close()
+        print("quic-ok")
+    try:
+        asyncio.run(asyncio.wait_for(main(), 4))
+    except Exception as e:
+        print("quic-failed", type(e).__name__)
 elif cmd == "refused":
     start = time.monotonic()
     try:
@@ -140,6 +199,20 @@ check "CNAME de rastreador desenmascarado" "0.0.0.0" "$(app python3 "$WORK/clien
 check "HTTPS permitido (SNI)" "hello through the tunnel" "$(app curl -sk --max-time 5 --resolve allowed.example:8443:192.0.2.1 https://allowed.example:8443/small)"
 # 35/56: the TLS handshake was cut after the ClientHello; 7 (no connection) would not prove it.
 check "HTTPS bloqueado por SNI" "blocked (curl [35][56])" "$(app curl -sk --max-time 5 --resolve ads.doubleclick.net:8443:192.0.2.1 https://ads.doubleclick.net:8443/small >/dev/null 2>&1 && echo served || echo "blocked (curl $?)")"
+if (( HAS_IPV6 )); then
+    check "DNS por IPv6 (resolvedor virtual fd00:6e66::1)" "0.0.0.0" "$(app python3 "$WORK/client.py" dns fd00:6e66::1 pubads.g.doubleclick.net)"
+    check "TCP por IPv6" "hello through the tunnel" "$(app curl -sg --max-time 5 'http://[2001:db8:1::1]:8080/small')"
+    check "UDP por IPv6" "udp-ok" "$(app python3 "$WORK/client.py" udp 2001:db8:1::1)"
+else
+    echo "SKIP IPv6: el kernel no tiene IPv6"
+fi
+if python3 -c "import aioquic" 2>/dev/null; then
+    check "QUIC permitido (SNI del Initial)" "quic-ok" "$(app python3 "$WORK/client.py" quic allowed.example)"
+    # Dropped by the tunnel: the handshake times out (any other error would prove nothing).
+    check "QUIC bloqueado por SNI del Initial" "quic-failed TimeoutError" "$(app python3 "$WORK/client.py" quic ads.doubleclick.net)"
+else
+    echo "SKIP QUIC: falta aioquic (pip install aioquic)"
+fi
 check "HTTP bloqueado por Host" "blocked*" "$(out=$(app curl -s --max-time 5 -H 'Host: ads.doubleclick.net' http://192.0.2.1:8080/small); [[ -z "$out" ]] && echo blocked || echo "served: $out")"
 
 # Five bursts of 50 parallel connections: all must succeed, and memory must not keep growing
@@ -177,7 +250,7 @@ for _ in $(seq 1 30); do
     active=$(tail -n 1 "$WORK/tunnel.log" | cut -d, -f3)
     [[ "$active" == 0 ]] && break
 done
-echo "INFO $(tail -n 1 "$WORK/tunnel.log") (consultas,bloqueadas,tcp,udp)"
+echo "INFO $(tail -n 1 "$WORK/tunnel.log") (consultas,bloqueadas,tcp,udp,quic rechazados)"
 check "Conexiones TCP liberadas tras cerrarse" "0" "$active"
 kill -0 "$TUNNEL_PID" && echo "PASS túnel sigue vivo" || { echo "FAIL túnel caído"; cat "$WORK/tunnel.log"; FAILURES=$((FAILURES + 1)); }
 echo "Fallos: $FAILURES"

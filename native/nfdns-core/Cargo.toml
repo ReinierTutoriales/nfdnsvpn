@@ -11,10 +11,14 @@ name = "nfdns"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+aes = "0.9.3"
+aes-gcm = "0.11.1"
 futures = "0.3"
+hkdf = "0.13.0"
 jni = "0.22.4"
 libc = "0.2"
 netstack-smoltcp = "0.2.4"
+sha2 = "0.11.0"
 tokio = { version = "1.53.2", features = ["rt", "net", "io-util", "time", "macros", "sync"] }
 
 [profile.release]

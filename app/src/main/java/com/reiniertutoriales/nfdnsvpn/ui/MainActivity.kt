@@ -99,7 +99,7 @@ class MainActivity : ComponentActivity() {
         val counters = ShieldState.stats
         val lines = mutableListOf(getString(R.string.stats, ShieldState.rules, counters?.queries ?: 0L, counters?.blocked ?: 0L))
         if (phase == ShieldState.Phase.RUNNING && ShieldState.fullTunnel && counters != null) {
-            lines += getString(R.string.stats_connections, counters.tcp, counters.udp)
+            lines += getString(R.string.stats_connections, counters.tcp, counters.udp, counters.quicRefused)
         }
         stats.text = lines.joinToString("\n")
 

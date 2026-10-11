@@ -43,9 +43,10 @@ class NativeCoreTest {
 
     @Test
     fun parsesStats() {
-        val stats = TunnelStats.parse("12,3,4,5\nads.example.com\ntracker.example.org")!!
-        assertEquals(listOf(12L, 3L, 4L, 5L), listOf(stats.queries, stats.blocked, stats.tcp, stats.udp))
+        val stats = TunnelStats.parse("12,3,4,5,6\nads.example.com\ntracker.example.org")!!
+        assertEquals(listOf(12L, 3L, 4L, 5L, 6L), listOf(stats.queries, stats.blocked, stats.tcp, stats.udp, stats.quicRefused))
         assertEquals(listOf("ads.example.com", "tracker.example.org"), stats.recent)
         assertNull(TunnelStats.parse(""))
+        assertNull(TunnelStats.parse("1,2,3,4"))
     }
 }

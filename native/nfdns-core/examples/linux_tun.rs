@@ -1,6 +1,6 @@
 //! Runs the tunnel on a Linux TUN device, for the end-to-end test in scripts/e2e-linux.sh.
 //! Usage: linux_tun <tun name> <upstream ip[:port]> <list file> <intercepted ip,...>
-//! Prints the stats line (`queries,blocked,tcp,udp`) every second.
+//! Prints the stats line (`queries,blocked,tcp,udp,quic_refused`) every second.
 use nfdns::filter::FilterBuilder;
 use nfdns::parse_servers;
 use nfdns::tunnel::Tunnel;

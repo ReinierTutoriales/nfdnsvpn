@@ -24,18 +24,26 @@ object NativeCore {
     /** Blocks until [nativeTunnelStop]; empty string, or the error that ended the tunnel. */
     @JvmStatic external fun nativeTunnelRun(tunnel: Long): String
     @JvmStatic external fun nativeTunnelStop(tunnel: Long)
-    /** `queries,blocked,tcp,udp` followed by recently blocked names, one per line. */
+    /** `queries,blocked,tcp,udp,quic_refused` followed by recently blocked names, one per line. */
     @JvmStatic external fun nativeTunnelStats(tunnel: Long): String
     @JvmStatic external fun nativeTunnelFree(tunnel: Long)
 }
 
-class TunnelStats(val queries: Long, val blocked: Long, val tcp: Long, val udp: Long, val recent: List<String>) {
+class TunnelStats(
+    val queries: Long,
+    val blocked: Long,
+    val tcp: Long,
+    val udp: Long,
+    /** QUIC flows without a readable server name, refused so the app falls back to TCP. */
+    val quicRefused: Long,
+    val recent: List<String>,
+) {
     companion object {
         fun parse(encoded: String): TunnelStats? {
             val lines = encoded.split('\n')
             val numbers = lines.first().split(',').mapNotNull(String::toLongOrNull)
-            if (numbers.size != 4) return null
-            return TunnelStats(numbers[0], numbers[1], numbers[2], numbers[3], lines.drop(1).filter(String::isNotEmpty))
+            if (numbers.size != 5) return null
+            return TunnelStats(numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], lines.drop(1).filter(String::isNotEmpty))
         }
     }
 }

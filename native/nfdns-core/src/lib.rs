@@ -8,6 +8,7 @@
 pub mod dns;
 pub mod filter;
 pub mod packet;
+pub mod quic;
 pub mod route;
 pub mod sni;
 pub mod tunnel;
@@ -158,7 +159,7 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
     }
 }
 
-/// `queries,blocked,tcp,udp` followed by recently blocked names, one per line.
+/// `queries,blocked,tcp,udp,quic_refused` followed by recently blocked names, one per line.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelStats<'caller>(
     mut unowned: EnvUnowned<'caller>,

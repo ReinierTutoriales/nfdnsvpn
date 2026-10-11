@@ -188,3 +188,19 @@ CDN compartidas y bloquear sus IPs rompería contenido legítimo. Las conexiones
 nombre siguen pasando; con SNI se cubren las que usan TLS.
 
 Medida con las tres listas por defecto: 304 017 dominios, 6,9 MB de filtro.
+
+## Fase 4: QUIC e IPv6
+
+**Estado:** QUIC hecho y probado en Linux con un TUN real; IPv6 probado solo en CI (el
+contenedor de desarrollo no tiene IPv6 en el kernel).
+
+| Técnica | Cómo |
+|---|---|
+| Nombre en QUIC (HTTP/3) | Los paquetes Initial del cliente se descifran con las claves que se derivan de su connection ID, que va en claro (RFC 9001 §5.2; probado con el vector oficial del Apéndice A). Se reensamblan los frames CRYPTO aunque el ClientHello ocupe varios paquetes y lleguen desordenados, y se lee el SNI |
+| Decisión | El tráfico UDP al puerto 443 se retiene hasta 1 s u 8 datagramas. Nombre bloqueado: se descarta el flujo. Nombre permitido: se reenvía. Sin nombre legible (otra versión de QUIC u otro protocolo): se descarta y la app vuelve a TCP, donde se inspecciona el SNI |
+| Reintentos | Un flujo descartado se mantiene 30 s tragando datagramas, para no reinspeccionar cada reintento |
+| Contador | "QUIC rechazado" en pantalla (modo completo) |
+| IPv6 | Mismo tratamiento que IPv4: DNS al resolvedor virtual `fd00:6e66::1`, TCP y UDP por la pila. La ruta `2000::/3` solo se añade si la red real tiene IPv6 (fase 2) |
+
+**Prueba:** `aioquic` como servidor y cliente a través del túnel: el SNI permitido completa el
+handshake; el bloqueado no recibe respuesta.

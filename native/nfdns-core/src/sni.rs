@@ -54,16 +54,22 @@ fn tls_server_name(data: &[u8]) -> Peek {
             break;
         }
     }
+    match client_hello_name(&handshake) {
+        Peek::NeedMore if data.len() >= MAX_PEEK => Peek::NoName,
+        peek => peek,
+    }
+}
+
+/// Server name in raw TLS handshake bytes (no record layer), as carried by TLS records or by
+/// QUIC CRYPTO frames.
+pub fn client_hello_name(handshake: &[u8]) -> Peek {
     if handshake.len() < 4 {
-        return if data.len() >= MAX_PEEK { Peek::NoName } else { Peek::NeedMore };
+        return Peek::NeedMore;
     }
     if handshake[0] != 1 {
         return Peek::NoName; // not a ClientHello
     }
-    let length = client_hello_length(&handshake);
-    let Some(hello) = handshake.get(4..4 + length) else {
-        return if data.len() >= MAX_PEEK { Peek::NoName } else { Peek::NeedMore };
-    };
+    let Some(hello) = handshake.get(4..4 + client_hello_length(handshake)) else { return Peek::NeedMore };
     parse_client_hello(hello).map_or(Peek::NoName, Peek::Name)
 }
 

@@ -6,7 +6,7 @@ HTTPS. En el lanzador aparece como **NF DNS VPN**.
 
 Premisas, arquitectura y fases: [`docs/PLAN.md`](docs/PLAN.md).
 
-## Estado: fase 3 (SNI, DoH y CNAME), pendiente de probar en la TV
+## Estado: fase 4 (QUIC e IPv6), pendiente de probar en la TV
 
 Dos modos, elegibles con el botón **Modo** de la pantalla:
 
@@ -16,6 +16,7 @@ Dos modos, elegibles con el botón **Modo** de la pantalla:
   En PC mueve más de 1 Gbit/s con unos 10 MB de RAM; falta medirlo en la TV.
   Además lee el nombre del servidor de cada conexión HTTPS (SNI) o HTTP (`Host`) y corta las
   de anuncios, rastreadores y DNS cifrado aunque la app no haya usado nuestro DNS.
+  También en QUIC/HTTP3: lee el nombre del primer paquete; si no puede, fuerza a la app a TCP.
 
 Lo que hacen ambos modos:
 
@@ -48,7 +49,7 @@ Requisitos: JDK 21, Android SDK con NDK `28.2.13676358`, Rust (`rustup`).
 
 ```bash
 (cd native/nfdns-core && cargo test)   # núcleo Rust
-sudo scripts/e2e-linux.sh              # túnel con un TUN real (Linux, root, iproute2, curl)
+sudo scripts/e2e-linux.sh              # túnel con un TUN real (Linux, root, iproute2, curl, aioquic)
 ./gradlew testDebugUnitTest lintDebug  # tests JVM contra la librería nativa + lint
 ./gradlew assembleDebug                # app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -64,7 +65,7 @@ cargo run --release --example measure -- lista1.txt lista2.txt
 
 | Ruta | Contenido |
 |---|---|
-| `native/nfdns-core` | Núcleo Rust: clasificador, DNS (con CNAME), SNI/Host, filtro de dominios, túnel (pila TCP/IP y relay), JNI |
+| `native/nfdns-core` | Núcleo Rust: clasificador, DNS (con CNAME), SNI/Host, QUIC Initial, filtro de dominios, túnel (pila TCP/IP y relay), JNI |
 | `scripts/e2e-linux.sh` | Prueba de extremo a extremo del túnel en *network namespaces* |
 | `app/src/main/java/.../vpn` | `ShieldVpnService` (TUN y rutas de cada modo), DNS de la red, ajustes, estado |
 | `app/src/main/java/.../lists` | Descarga y caché de listas |

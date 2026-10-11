@@ -9,6 +9,7 @@
 use crate::dns;
 use crate::filter::Filter;
 use crate::route::{classify, wrap_reply, Verdict};
+use crate::quic::{InitialReader, QuicPeek};
 use crate::sni::{self, Peek};
 use futures::{SinkExt, StreamExt};
 use netstack_smoltcp::udp::UdpMsg;
@@ -49,6 +50,11 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const INSPECTED_PORTS: [u16; 4] = [80, 443, 8080, 8443];
 /// How long a client on an inspected port may stay silent before it is relayed uninspected.
 const PEEK_TIMEOUT: Duration = Duration::from_secs(3);
+/// QUIC (HTTP/3). Its first datagrams are held while the server name is read from them.
+const QUIC_PORT: u16 = 443;
+const QUIC_PEEK_TIMEOUT: Duration = Duration::from_secs(1);
+const QUIC_PEEK_DATAGRAMS: usize = 8;
+const REFUSED_FLOW_IDLE: Duration = Duration::from_secs(30);
 
 /// Quad9, only when the network announces no resolver.
 const FALLBACK_UPSTREAM: [SocketAddr; 2] = [
@@ -62,6 +68,8 @@ pub struct Stats {
     pub blocked: AtomicU64,
     pub tcp_active: AtomicU64,
     pub udp_active: AtomicU64,
+    /// QUIC flows refused because no server name could be read (the app falls back to TCP).
+    pub quic_refused: AtomicU64,
     recent: Mutex<VecDeque<String>>,
 }
 
@@ -80,14 +88,15 @@ impl Stats {
         recent.truncate(RECENT_LIMIT);
     }
 
-    /// `queries,blocked,tcp,udp` then one recently blocked name per line, newest first.
+    /// `queries,blocked,tcp,udp,quic_refused` then one recently blocked name per line, newest first.
     pub fn encode(&self) -> String {
         let mut out = format!(
-            "{},{},{},{}",
+            "{},{},{},{},{}",
             self.queries.load(Ordering::Relaxed),
             self.blocked.load(Ordering::Relaxed),
             self.tcp_active.load(Ordering::Relaxed),
             self.udp_active.load(Ordering::Relaxed),
+            self.quic_refused.load(Ordering::Relaxed),
         );
         for name in self.recent.lock().unwrap().iter() {
             out.push('\n');
@@ -207,7 +216,7 @@ impl Tunnel {
             tokio::spawn(relay_tcp(tcp, self.filter.clone(), self.stats.clone()));
         }
         if let Some(udp) = udp {
-            tokio::spawn(relay_udp(udp, self.stats.clone()));
+            tokio::spawn(relay_udp(udp, self.filter.clone(), self.stats.clone()));
         }
 
         let mut buffer = vec![0u8; MAX_PACKET];
@@ -419,7 +428,7 @@ async fn pipe<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(mut reader: R, mut wr
 
 /// UDP "NAT": one connected socket per (app address, destination) flow, closed after
 /// [`UDP_IDLE`] without traffic in either direction.
-async fn relay_udp(udp: netstack_smoltcp::UdpSocket, stats: Arc<Stats>) {
+async fn relay_udp(udp: netstack_smoltcp::UdpSocket, filter: Arc<Filter>, stats: Arc<Stats>) {
     let (mut inbound, mut outbound) = udp.split();
     let (replies, mut pending) = mpsc::channel::<UdpMsg>(512);
     tokio::spawn(async move {
@@ -430,6 +439,7 @@ async fn relay_udp(udp: netstack_smoltcp::UdpSocket, stats: Arc<Stats>) {
         }
     });
 
+    let context = Arc::new(UdpContext { replies, filter, stats });
     let mut flows: HashMap<(SocketAddr, SocketAddr), mpsc::Sender<Vec<u8>>> = HashMap::new();
     while let Some((data, local, remote)) = inbound.next().await {
         let key = (local, remote);
@@ -438,34 +448,97 @@ async fn relay_udp(udp: netstack_smoltcp::UdpSocket, stats: Arc<Stats>) {
                 Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => continue,
                 Err(mpsc::error::TrySendError::Closed(data)) => {
                     flows.remove(&key);
-                    start_udp_flow(&mut flows, key, data, &replies, &stats);
+                    start_udp_flow(&mut flows, key, data, &context);
                 }
             }
         } else {
             flows.retain(|_, flow| !flow.is_closed());
-            start_udp_flow(&mut flows, key, data, &replies, &stats);
+            start_udp_flow(&mut flows, key, data, &context);
         }
     }
+}
+
+/// What every UDP flow needs: the way back to the stack, the filter and the counters.
+struct UdpContext {
+    replies: mpsc::Sender<UdpMsg>,
+    filter: Arc<Filter>,
+    stats: Arc<Stats>,
 }
 
 fn start_udp_flow(
     flows: &mut HashMap<(SocketAddr, SocketAddr), mpsc::Sender<Vec<u8>>>,
     key: (SocketAddr, SocketAddr),
     first: Vec<u8>,
-    replies: &mpsc::Sender<UdpMsg>,
-    stats: &Arc<Stats>,
+    context: &Arc<UdpContext>,
 ) {
     let (sender, receiver) = mpsc::channel(64);
     let _ = sender.try_send(first);
     flows.insert(key, sender);
-    tokio::spawn(udp_flow(key.0, key.1, receiver, replies.clone(), stats.clone()));
+    tokio::spawn(udp_flow(key.0, key.1, receiver, context.clone()));
 }
 
-async fn udp_flow(local: SocketAddr, remote: SocketAddr, mut from_app: mpsc::Receiver<Vec<u8>>, replies: mpsc::Sender<UdpMsg>, stats: Arc<Stats>) {
+enum QuicDecision {
+    /// Allowed name: these datagrams were held back and go out first.
+    Allow(Vec<Vec<u8>>),
+    Block(String),
+    /// No readable name (another QUIC version, another protocol, or nothing in time): refused,
+    /// so the app falls back to TCP, where the SNI is inspected.
+    Refuse,
+}
+
+/// Holds the first datagrams of a QUIC flow until its server name is known.
+async fn inspect_quic(from_app: &mut mpsc::Receiver<Vec<u8>>, filter: &Filter) -> QuicDecision {
+    let mut reader = InitialReader::default();
+    let mut held = Vec::new();
+    let deadline = Instant::now() + QUIC_PEEK_TIMEOUT;
+    while held.len() < QUIC_PEEK_DATAGRAMS {
+        let Ok(Some(datagram)) = timeout_at(deadline, from_app.recv()).await else { return QuicDecision::Refuse };
+        let peek = reader.feed(&datagram);
+        held.push(datagram);
+        match peek {
+            QuicPeek::Name(name) if filter.is_blocked(&name) => return QuicDecision::Block(name),
+            QuicPeek::Name(_) => return QuicDecision::Allow(held),
+            QuicPeek::Unknown => return QuicDecision::Refuse,
+            QuicPeek::NeedMore => {}
+        }
+    }
+    QuicDecision::Refuse
+}
+
+/// Keeps a refused flow's key taken, discarding what the app sends, so retries do not each
+/// start a new inspection. Ends after [`REFUSED_FLOW_IDLE`] of silence.
+async fn swallow(from_app: &mut mpsc::Receiver<Vec<u8>>) {
+    while let Ok(Some(_)) = timeout(REFUSED_FLOW_IDLE, from_app.recv()).await {}
+}
+
+async fn udp_flow(local: SocketAddr, remote: SocketAddr, mut from_app: mpsc::Receiver<Vec<u8>>, context: Arc<UdpContext>) {
+    let stats = &context.stats;
     let _active = Active::new(&stats.udp_active);
+    let held = if remote.port() == QUIC_PORT {
+        match inspect_quic(&mut from_app, &context.filter).await {
+            QuicDecision::Allow(held) => held,
+            QuicDecision::Block(name) => {
+                stats.blocked.fetch_add(1, Ordering::Relaxed);
+                stats.remember(name);
+                swallow(&mut from_app).await;
+                return;
+            }
+            QuicDecision::Refuse => {
+                stats.quic_refused.fetch_add(1, Ordering::Relaxed);
+                swallow(&mut from_app).await;
+                return;
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let replies = &context.replies;
     let Ok(socket) = UdpSocket::bind(unspecified_for(&remote)).await else { return };
     if socket.connect(remote).await.is_err() {
         return;
+    }
+    for datagram in held {
+        let _ = socket.send(&datagram).await;
     }
     let mut buffer = vec![0u8; MAX_PACKET];
     loop {
