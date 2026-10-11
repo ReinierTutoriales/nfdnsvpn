@@ -9,7 +9,7 @@
 use crate::dns;
 use crate::filter::Filter;
 use crate::route::{classify, wrap_reply, Verdict};
-use crate::quic::{InitialReader, QuicPeek};
+use crate::quic::{self, InitialReader, QuicPeek};
 use crate::sni::{self, Peek};
 use futures::{SinkExt, StreamExt};
 use netstack_smoltcp::udp::UdpMsg;
@@ -48,11 +48,13 @@ const UDP_FLOW_BUFFER: usize = 16 * 1024;
 /// short connections), which would otherwise keep the task and its buffers forever.
 const HALF_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-/// Ports whose clients speak first with TLS or HTTP, so the server name can be read before the
-/// connection is relayed. Other ports are relayed without waiting.
-const INSPECTED_PORTS: [u16; 4] = [80, 443, 8080, 8443];
-/// How long a client on an inspected port may stay silent before it is relayed uninspected.
+/// Usual TLS/HTTP ports: clients always speak first, so the server name is waited for.
+const WEB_PORTS: [u16; 4] = [80, 443, 8080, 8443];
+/// How long a client on a web port may stay silent before it is relayed uninspected.
 const PEEK_TIMEOUT: Duration = Duration::from_secs(3);
+/// Any other port is inspected too (DoH or DoQ on an unusual port must not slip through), but
+/// a client that stays silent this long (a server-speaks-first protocol) is relayed at once.
+const OTHER_PORT_PEEK_TIMEOUT: Duration = Duration::from_millis(300);
 /// QUIC (HTTP/3). Its first datagrams are held while the server name is read from them.
 const QUIC_PORT: u16 = 443;
 const QUIC_PEEK_TIMEOUT: Duration = Duration::from_secs(1);
@@ -374,8 +376,9 @@ async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: SharedFi
             let _active = Active::new(&stats.tcp_active);
             // Connect while the app sends its first bytes, so inspection adds no round trip.
             let connect = tokio::spawn(timeout(CONNECT_TIMEOUT, TcpStream::connect(remote)));
-            let first = if INSPECTED_PORTS.contains(&remote.port()) {
-                match first_flight(&mut inbound).await {
+            let peek_timeout = if WEB_PORTS.contains(&remote.port()) { PEEK_TIMEOUT } else { OTHER_PORT_PEEK_TIMEOUT };
+            let first = {
+                match first_flight(&mut inbound, peek_timeout).await {
                     Some((_, Some(name))) if filter.is_blocked(&name) => {
                         // Closing `inbound` makes the app see the connection fail at once.
                         connect.abort();
@@ -389,8 +392,6 @@ async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: SharedFi
                         return;
                     }
                 }
-            } else {
-                Vec::new()
             };
             // The app already completed its handshake with the stack; if the real server is
             // unreachable, dropping `inbound` resets the connection.
@@ -413,11 +414,11 @@ async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: SharedFi
 }
 
 /// Reads what the app sends first until its server name is known (or cannot be), at most
-/// [`sni::MAX_PEEK`] bytes or [`PEEK_TIMEOUT`]. `None` if the app closed before sending anything.
-async fn first_flight(inbound: &mut netstack_smoltcp::TcpStream) -> Option<(Vec<u8>, Option<String>)> {
+/// [`sni::MAX_PEEK`] bytes or `wait`. `None` if the app closed before sending anything.
+async fn first_flight(inbound: &mut netstack_smoltcp::TcpStream, wait: Duration) -> Option<(Vec<u8>, Option<String>)> {
     let mut first = Vec::new();
     let mut chunk = vec![0u8; RELAY_BUFFER];
-    let deadline = Instant::now() + PEEK_TIMEOUT;
+    let deadline = Instant::now() + wait;
     loop {
         match sni::server_name(&first) {
             Peek::Name(name) => return Some((first, Some(name))),
@@ -511,12 +512,19 @@ enum QuicDecision {
 }
 
 /// Holds the first datagrams of a QUIC flow until its server name is known.
-async fn inspect_quic(from_app: &mut mpsc::Receiver<Vec<u8>>, filter: &Filter) -> QuicDecision {
+async fn inspect_quic(first: Vec<u8>, from_app: &mut mpsc::Receiver<Vec<u8>>, filter: &Filter) -> QuicDecision {
     let mut reader = InitialReader::default();
     let mut held = Vec::new();
     let deadline = Instant::now() + QUIC_PEEK_TIMEOUT;
+    let mut next = Some(first);
     while held.len() < QUIC_PEEK_DATAGRAMS {
-        let Ok(Some(datagram)) = timeout_at(deadline, from_app.recv()).await else { return QuicDecision::Refuse };
+        let datagram = match next.take() {
+            Some(datagram) => datagram,
+            None => match timeout_at(deadline, from_app.recv()).await {
+                Ok(Some(datagram)) => datagram,
+                _ => return QuicDecision::Refuse,
+            },
+        };
         let peek = reader.feed(&datagram);
         held.push(datagram);
         match peek {
@@ -538,8 +546,10 @@ async fn swallow(from_app: &mut mpsc::Receiver<Vec<u8>>) {
 async fn udp_flow(local: SocketAddr, remote: SocketAddr, mut from_app: mpsc::Receiver<Vec<u8>>, context: Arc<UdpContext>) {
     let stats = &context.stats;
     let _active = Active::new(&stats.udp_active);
-    let held = if remote.port() == QUIC_PORT {
-        match inspect_quic(&mut from_app, &context.filter.current()).await {
+    let Some(first) = from_app.recv().await else { return };
+    // QUIC on its usual port, or a QUIC Initial on any other (DoQ, apps on custom ports).
+    let held = if remote.port() == QUIC_PORT || quic::looks_like_initial(&first) {
+        match inspect_quic(first, &mut from_app, &context.filter.current()).await {
             QuicDecision::Allow(held) => held,
             QuicDecision::Block(name) => {
                 stats.blocked.fetch_add(1, Ordering::Relaxed);
@@ -554,7 +564,7 @@ async fn udp_flow(local: SocketAddr, remote: SocketAddr, mut from_app: mpsc::Rec
             }
         }
     } else {
-        Vec::new()
+        vec![first]
     };
     let replies = &context.replies;
     let Ok(socket) = UdpSocket::bind(unspecified_for(&remote)).await else { return };

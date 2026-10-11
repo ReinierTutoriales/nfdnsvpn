@@ -161,6 +161,14 @@ fn crypto_frames(payload: &[u8]) -> Option<Vec<(u64, Vec<u8>)>> {
     Some(frames)
 }
 
+/// Cheap test, without decryption, for the first datagram of a QUIC v1 connection: a long-header
+/// Initial packet in a datagram padded to at least 1200 bytes, as RFC 9000 §14.1 requires.
+pub fn looks_like_initial(datagram: &[u8]) -> bool {
+    datagram.len() >= 1200
+        && datagram[0] & 0xF0 == 0xC0
+        && datagram.get(1..5).is_some_and(|version| version == VERSION_1.to_be_bytes())
+}
+
 /// Gathers the client's Initial packets of one QUIC connection until the ClientHello is whole.
 #[derive(Default)]
 pub struct InitialReader {
@@ -229,6 +237,14 @@ mod tests {
     fn reads_the_server_name_of_the_rfc9001_client_initial() {
         let mut reader = InitialReader::default();
         assert_eq!(reader.feed(&rfc_packet()), QuicPeek::Name("example.com".into()));
+    }
+
+    #[test]
+    fn recognises_initials_without_decrypting() {
+        assert!(looks_like_initial(&rfc_packet()));
+        assert!(!looks_like_initial(&rfc_packet()[..1100]));
+        assert!(!looks_like_initial(&[0x40; 1300])); // short header
+        assert!(!looks_like_initial(b"game traffic"));
     }
 
     #[test]

@@ -7,8 +7,17 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** A DNS blocklist in adblock syntax (`||domain^`), downloaded from one or more files. */
-data class BlockList(val id: String, val name: String, val urls: List<String>, val enabledByDefault: Boolean) {
+/**
+ * A blocklist downloaded from one or more files: domain rules in adblock syntax (`||domain^`), or
+ * one IP address per line ([ipList]) for servers reached without a name.
+ */
+data class BlockList(
+    val id: String,
+    val name: String,
+    val urls: List<String>,
+    val enabledByDefault: Boolean,
+    val ipList: Boolean = false,
+) {
     constructor(id: String, name: String, url: String, enabledByDefault: Boolean) : this(id, name, listOf(url), enabledByDefault)
 
     /** One saved file per URL. */
@@ -34,6 +43,18 @@ class ListRepository(private val context: Context) {
             // Encrypted DNS servers (DoH/DoQ): apps cannot resolve or reach them, so they fall back to
             // plain DNS. Applied to DNS answers and to the SNI of TCP connections.
             BlockList("hagezi-doh", "HaGeZi Encrypted DNS", "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt", true),
+            // Addresses of encrypted DNS servers, for apps that connect to them by IP (no DNS, no
+            // usable SNI). Only non-DNS traffic to them is refused; plain DNS is still answered.
+            BlockList(
+                "doh-ips", "IPs de DNS cifrado (HaGeZi + dibdot)",
+                listOf(
+                    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/ips/doh.txt",
+                    "https://raw.githubusercontent.com/dibdot/DoH-IP-blocklists/master/doh-ipv4.txt",
+                    "https://raw.githubusercontent.com/dibdot/DoH-IP-blocklists/master/doh-ipv6.txt",
+                ),
+                true,
+                ipList = true,
+            ),
             // Optional: mostly overlap with the defaults; big costs about 5 MB more RAM.
             BlockList("oisd-small", "OISD small", "https://small.oisd.nl/", false),
             BlockList("oisd-big", "OISD big", "https://big.oisd.nl/", false),
@@ -56,7 +77,7 @@ class ListRepository(private val context: Context) {
         const val BUNDLED_ASSET = "video-ads.txt"
         private const val MAX_AGE_MS = 24 * 60 * 60 * 1000L
         private const val MAX_TEXT_CHARS = 16L * 1024 * 1024
-        /** A list with fewer domain rules is an error page or a truncated download. */
+        /** A list with fewer rules (domains or addresses) is an error page or a truncated download. */
         private const val MIN_RULES = 100
     }
 
@@ -81,7 +102,7 @@ class ListRepository(private val context: Context) {
             for ((key, url) in list.sources()) {
                 if (isDue(key)) {
                     try {
-                        refresh(key, url)
+                        refresh(key, url, list.ipList)
                     } catch (e: IOException) {
                         error = error ?: (e.message ?: e.javaClass.simpleName)
                     }
@@ -98,9 +119,16 @@ class ListRepository(private val context: Context) {
         return LoadedLists(files, status)
     }
 
+    /** Line starting with an IPv4 or IPv6 address (the core does the real parsing). */
+    private fun looksLikeAddress(line: String): Boolean {
+        val token = line.substringBefore('#').trim()
+        return token.isNotEmpty() && token.none(Char::isWhitespace) &&
+            (token.count { it == '.' } == 3 || token.contains(':')) && token.all { it.isLetterOrDigit() || it == '.' || it == ':' }
+    }
+
     fun bundledRules(): String = context.assets.open(BUNDLED_ASSET).bufferedReader().use { it.readText() }
 
-    private fun refresh(key: String, url: String) {
+    private fun refresh(key: String, url: String, ipList: Boolean) {
         val target = file(key)
         val connection = URL(url).openConnection() as HttpURLConnection
         connection.connectTimeout = 10_000
@@ -129,7 +157,7 @@ class ListRepository(private val context: Context) {
                         val line = reader.readLine() ?: break
                         characters += line.length + 1
                         if (characters > MAX_TEXT_CHARS) throw IOException("Lista demasiado grande")
-                        if (line.startsWith("||")) rules++
+                        if (if (ipList) looksLikeAddress(line) else line.startsWith("||")) rules++
                         writer.write(line)
                         writer.write('\n'.code)
                     }

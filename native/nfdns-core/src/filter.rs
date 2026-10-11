@@ -3,6 +3,8 @@
 //! Only rules that a resolver can apply are kept: without decrypting traffic the URL is never
 //! visible, so path, option and cosmetic rules are dropped.
 
+use std::net::IpAddr;
+
 /// Sorted, deduplicated lowercase domains packed into one buffer: about 25 bytes per domain
 /// instead of the ~70 a `HashSet<String>` costs, which matters on a 2 GB TV.
 #[derive(Default)]
@@ -74,6 +76,8 @@ pub struct Filter {
     block_exact: DomainSet,
     allow_suffix: DomainSet,
     allow_exact: DomainSet,
+    /// Bare IP lines (encrypted DNS servers reached by address): sorted for binary search.
+    blocked_ips: Vec<IpAddr>,
 }
 
 impl Filter {
@@ -86,7 +90,16 @@ impl Filter {
         self.block_exact.contains(domain) || self.block_suffix.contains_suffix_of(domain)
     }
 
-    /// Number of blocking rules after deduplication.
+    /// Non-DNS traffic to these addresses is refused (DoH, DoT, DoQ to a hardcoded server).
+    pub fn is_ip_blocked(&self, address: &IpAddr) -> bool {
+        self.blocked_ips.binary_search(address).is_ok()
+    }
+
+    pub fn ip_count(&self) -> usize {
+        self.blocked_ips.len()
+    }
+
+    /// Number of domain blocking rules after deduplication.
     pub fn rule_count(&self) -> usize {
         self.block_suffix.len() + self.block_exact.len()
     }
@@ -121,6 +134,7 @@ pub struct FilterBuilder {
     block_exact: Collector,
     allow_suffix: Collector,
     allow_exact: Collector,
+    blocked_ips: Vec<IpAddr>,
 }
 
 enum Rule {
@@ -128,6 +142,7 @@ enum Rule {
     BlockExact(String),
     AllowSuffix(String),
     AllowExact(String),
+    BlockIp(IpAddr),
 }
 
 impl FilterBuilder {
@@ -160,12 +175,16 @@ impl FilterBuilder {
                 Rule::BlockExact(d) => self.block_exact.push(&d),
                 Rule::AllowSuffix(d) => self.allow_suffix.push(&d),
                 Rule::AllowExact(d) => self.allow_exact.push(&d),
+                Rule::BlockIp(ip) => self.blocked_ips.push(ip),
             }
         }
     }
 
-    pub fn build(self) -> Filter {
+    pub fn build(mut self) -> Filter {
+        self.blocked_ips.sort_unstable();
+        self.blocked_ips.dedup();
         Filter {
+            blocked_ips: self.blocked_ips,
             block_suffix: DomainSet::from_collector(self.block_suffix),
             block_exact: DomainSet::from_collector(self.block_exact),
             allow_suffix: DomainSet::from_collector(self.allow_suffix),
@@ -243,9 +262,22 @@ fn parse_line(line: &str) -> Vec<Rule> {
             .collect();
     }
     if tokens.next().is_none() {
+        if let Ok(ip) = first.parse::<IpAddr>() {
+            return blockable_ip(ip).map(Rule::BlockIp).into_iter().collect();
+        }
         return normalize_domain(first).map(Rule::BlockExact).into_iter().collect();
     }
     Vec::new()
+}
+
+/// Only public unicast addresses: a list entry for a loopback, private or multicast address would
+/// cut local services (the router's admin page, casting) rather than an encrypted DNS server.
+fn blockable_ip(ip: IpAddr) -> Option<IpAddr> {
+    let local = match ip {
+        IpAddr::V4(a) => a.is_private() || a.is_loopback() || a.is_link_local() || a.is_unspecified() || a.is_multicast() || a.is_broadcast(),
+        IpAddr::V6(a) => a.is_loopback() || a.is_unspecified() || a.is_multicast() || (a.segments()[0] & 0xfe00) == 0xfc00 || (a.segments()[0] & 0xffc0) == 0xfe80,
+    };
+    (!local).then_some(ip)
 }
 
 #[cfg(test)]
@@ -326,6 +358,18 @@ mod tests {
         assert!(f.is_blocked("x.a.example") && f.is_blocked("b.example") && f.is_blocked("d.example"));
         assert!(!f.is_blocked("ok.a.example"));
         assert!(f.is_blocked("f.example"));
+    }
+
+    #[test]
+    fn bare_ip_lines_block_public_addresses_only() {
+        let f = filter("1.1.1.1\n8.8.8.8             # dns.google\n2606:4700:4700::1111  # cloudflare\n192.168.1.1\n127.0.0.1\nfd00::1\n224.0.0.1\n1.1.1.1\n");
+        assert!(f.is_ip_blocked(&"1.1.1.1".parse().unwrap()));
+        assert!(f.is_ip_blocked(&"8.8.8.8".parse().unwrap()));
+        assert!(f.is_ip_blocked(&"2606:4700:4700::1111".parse().unwrap()));
+        assert!(!f.is_ip_blocked(&"192.168.1.1".parse().unwrap()));
+        assert!(!f.is_ip_blocked(&"9.9.9.9".parse().unwrap()));
+        assert_eq!(f.ip_count(), 3);
+        assert_eq!(f.rule_count(), 0);
     }
 
     #[test]

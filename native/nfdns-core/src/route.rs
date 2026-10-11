@@ -46,7 +46,8 @@ pub fn classify(filter: &Filter, intercepted: &[IpAddr], data: &[u8]) -> Verdict
     }
     let refused = p.dst_port == ENCRYPTED_DNS_PORT
         || (p.protocol == PROTO_TCP && p.dst_port == DNS_PORT)
-        || intercepted.contains(&p.dst);
+        || intercepted.contains(&p.dst)
+        || filter.is_ip_blocked(&p.dst);
     match (refused, p.protocol) {
         (true, PROTO_TCP) => reset(&p),
         (true, _) => Verdict::Drop,
@@ -119,6 +120,20 @@ mod tests {
         assert_eq!(classify(&f, &intercepted(), &quic_to_resolver), Verdict::Drop);
         let doq = udp_packet(client, ip("203.0.113.9"), 50000, 853, b"doq");
         assert_eq!(classify(&f, &intercepted(), &doq), Verdict::Drop);
+    }
+
+    #[test]
+    fn listed_encrypted_dns_addresses_are_refused_but_still_get_dns() {
+        let mut builder = FilterBuilder::default();
+        builder.add_list("203.0.113.53\n");
+        let f = builder.build();
+        let client = ip("10.111.0.2");
+        let doh = tcp_syn(client, ip("203.0.113.53"), 50000, 443, 7);
+        assert!(matches!(classify(&f, &[], &doh), Verdict::Reply { blocked: None, .. }));
+        let doq = udp_packet(client, ip("203.0.113.53"), 50000, 8853, b"doq");
+        assert_eq!(classify(&f, &[], &doq), Verdict::Drop);
+        let plain_dns = udp_packet(client, ip("203.0.113.53"), 50000, 53, &build_query(3, "example.com", TYPE_A));
+        assert!(matches!(classify(&f, &[], &plain_dns), Verdict::Forward { .. }));
     }
 
     #[test]

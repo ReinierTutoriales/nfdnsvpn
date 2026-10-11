@@ -85,6 +85,7 @@ instaladas sin depender de ningún navegador.
 | AdGuard DNS filter | `https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt` | Sí |
 | HaGeZi Multi Pro | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt` | Sí |
 | HaGeZi Encrypted DNS (servidores DoH/DoQ) | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt` | Sí (fase 3) |
+| IPs de DNS cifrado: HaGeZi `ips/doh.txt` + dibdot `doh-ipv4.txt` y `doh-ipv6.txt` | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/ips/doh.txt`, `https://raw.githubusercontent.com/dibdot/DoH-IP-blocklists/master/doh-ipv{4,6}.txt` | Sí (anti-bypass) |
 | OISD small | `https://small.oisd.nl/` | No (opcional en Ajustes) |
 | OISD big | `https://big.oisd.nl/` | No (opcional en Ajustes) |
 | uBlock Origin: filters, privacy, badware (solo sus reglas de dominio) | `https://ublockorigin.github.io/uAssets/filters/{filters,privacy,badware}.txt` | No (opcional en Ajustes): +240 dominios sobre las de por defecto |
@@ -243,3 +244,24 @@ Es la prueba en el dispositivo, sin código nuevo previsto salvo ajustes que sal
 | Descarga de listas | Lista entera en memoria antes de guardarla | Línea a línea al disco, validando por el camino |
 | Contadores de la pantalla | Consultados cada segundo aunque nadie mire | Solo mientras la pantalla está visible: sin despertar la CPU en segundo plano |
 | Búfer por flujo UDP | 64 KiB (50 flujos QUIC: 3,2 MB) | 16 KiB (0,8 MB); los datagramas reales no pasan del MTU |
+
+## Blindaje anti-bypass del DNS
+
+Objetivo: fuera de los anuncios que sirve la propia app, ninguna app debe poder resolver un
+dominio bloqueado ni conectarse a él.
+
+| Vía de escape | Cierre | Probado en `e2e-linux.sh` |
+|---|---|---|
+| Resolvedor propio (cualquier IP, UDP 53) | Modo completo por defecto: toda consulta UDP 53 se contesta en el túnel | Sí (8.8.8.8 y 203.0.113.53) |
+| DNS directo al router (está en la LAN, fuera del túnel) | Se enrutan al túnel solo las IP de los DNS de la red; el resto de la LAN sigue directa | No (es enrutado de Android) |
+| DNS por TCP, DoT y DoQ (853) | RST / descarte hacia cualquier IP | Sí |
+| DoH por nombre | Lista HaGeZi Encrypted DNS, por DNS y por SNI | Sí (SNI) |
+| DoH por IP fija | Listas de IPs de DNS cifrado (unas 3400 IPv4 y 1400 IPv6): se corta todo lo que no sea DNS hacia ellas. Solo IPs públicas: nunca se bloquea una dirección local | Sí |
+| TLS o QUIC en puertos no estándar | SNI inspeccionado en cualquier puerto (3 s en 80/443/8080/8443, 300 ms en el resto); QUIC detectado en cualquier puerto por su paquete Initial | Sí |
+| QUIC ilegible (otra versión, cifrado propio sobre UDP 443) | Se descarta: la app vuelve a TCP | Sí |
+| La protección se detiene (actualización, falta de memoria) | La app avisa si falta «Bloquear conexiones sin VPN» de Android; con él no sale nada sin filtrar | No (ajuste del sistema) |
+| Modo ligero | No es a prueba de bypass: solo se enruta el DNS. Queda como opción de bajo consumo | — |
+
+**Límites que siguen existiendo** (ninguna herramienta sin descifrar el tráfico los cierra):
+una app que lleve sus consultas dentro de su propio protocolo cifrado hacia sus servidores, o
+que se conecte a una IP fija sin TLS ni nombre. Equivale a la app que sirve sus propios anuncios.

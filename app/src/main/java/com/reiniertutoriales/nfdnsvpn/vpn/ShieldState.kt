@@ -14,6 +14,8 @@ object ShieldState {
     @Volatile var rules = 0
     @Volatile var lists: List<ListStatus> = emptyList()
     @Volatile var privateDnsStrict: String? = null
+    /** "Block connections without VPN" is on: nothing leaves unfiltered if the service stops. */
+    @Volatile var lockdown = true
     /** The running tunnel. The screen reads its counters itself while visible, so nothing polls
      * them (or wakes the TV's CPU) when nobody is looking. */
     @Volatile var tunnel: NativeTunnel? = null

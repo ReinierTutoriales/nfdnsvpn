@@ -135,6 +135,7 @@ class MainActivity : ComponentActivity() {
         val problems = listOfNotNull(
             ShieldState.error?.let { getString(R.string.error_prefix, it) },
             ShieldState.privateDnsStrict?.let { getString(R.string.warning_private_dns, it) },
+            getString(R.string.warning_lockdown).takeIf { phase == ShieldState.Phase.RUNNING && !ShieldState.lockdown },
         )
         warning.visibility = if (problems.isEmpty()) View.GONE else View.VISIBLE
         warning.text = problems.joinToString("\n\n")

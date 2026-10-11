@@ -48,6 +48,8 @@ for ns in "$TV" "$GW" "$SRV"; do ip netns add "$ns"; ip -n "$ns" link set lo up;
 ip link add veth-gw netns "$GW" type veth peer name veth-srv netns "$SRV"
 gw ip addr add 192.0.2.2/24 dev veth-gw
 srv ip addr add 192.0.2.1/24 dev veth-srv
+# A second address listed as an encrypted DNS server: non-DNS traffic to it must be refused.
+srv ip addr add 192.0.2.9/24 dev veth-srv
 if (( HAS_IPV6 )); then
     gw ip addr add 2001:db8:1::2/64 dev veth-gw nodad
     srv ip addr add 2001:db8:1::1/64 dev veth-srv nodad
@@ -86,9 +88,9 @@ def fake_dns():
             records = b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + socket.inet_aton("192.0.2.1")
             count = 1
         s.sendto(q[:2] + b"\x81\x80\x00\x01" + struct.pack(">H", count) + b"\x00\x00\x00\x00" + question + records, peer)
-def https():
+def https(port):
     handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[1])
-    server = http.server.ThreadingHTTPServer(("192.0.2.1", 8443), handler)
+    server = http.server.ThreadingHTTPServer(("", port), handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(os.path.join(sys.argv[1], "cert.pem"), os.path.join(sys.argv[1], "key.pem"))
     server.socket = context.wrap_socket(server.socket, server_side=True)
@@ -101,6 +103,7 @@ def quic():
     configuration.load_cert_chain(os.path.join(sys.argv[1], "cert.pem"), os.path.join(sys.argv[1], "key.pem"))
     async def main():
         await serve("192.0.2.1", 443, configuration=configuration)
+        await serve("192.0.2.1", 4433, configuration=configuration)
         await asyncio.Future()
     asyncio.run(main())
 class HTTPServerV6(http.server.ThreadingHTTPServer):
@@ -109,7 +112,8 @@ def http_v6():
     handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[1])
     HTTPServerV6(("2001:db8:1::1", 8080), handler).serve_forever()
 threading.Thread(target=udp_echo, args=(socket.AF_INET, "192.0.2.1"), daemon=True).start()
-threading.Thread(target=https, daemon=True).start()
+threading.Thread(target=https, args=(8443,), daemon=True).start()
+threading.Thread(target=https, args=(9443,), daemon=True).start()
 if socket.has_ipv6 and os.path.isdir("/proc/sys/net/ipv6"):
     threading.Thread(target=udp_echo, args=(socket.AF_INET6, "2001:db8:1::1"), daemon=True).start()
     threading.Thread(target=http_v6, daemon=True).start()
@@ -122,7 +126,7 @@ fake_dns()
 EOF
 srv "$PY" "$WORK/servers.py" "$WORK" > /dev/null 2>&1 & PIDS+=($!)
 srv python3 -m http.server 8080 --bind 192.0.2.1 --directory "$WORK" >/dev/null 2>&1 & PIDS+=($!)
-printf '||doubleclick.net^\n' > "$WORK/list.txt"
+printf '||doubleclick.net^\n192.0.2.9\n' > "$WORK/list.txt"
 ip netns exec "$GW" "$TUNNEL_BIN" tun0 192.0.2.1 "$WORK/list.txt" 10.111.0.1,8.8.8.8 > "$WORK/tunnel.log" 2>&1 &
 TUNNEL_PID=$!   # ip netns exec execs the binary, so this is the tunnel itself
 PIDS+=($TUNNEL_PID)
@@ -165,7 +169,7 @@ elif cmd == "quic":
         transport, protocol = await asyncio.get_running_loop().create_datagram_endpoint(
             lambda: QuicConnectionProtocol(QuicConnection(configuration=configuration)), local_addr=("0.0.0.0", 0))
         try:
-            protocol.connect(("192.0.2.1", 443))
+            protocol.connect(("192.0.2.1", int(sys.argv[3]) if len(sys.argv) > 3 else 443))
             await protocol.wait_connected()
             await protocol.ping()
         finally:
@@ -179,7 +183,8 @@ elif cmd == "quic":
 elif cmd == "refused":
     start = time.monotonic()
     try:
-        socket.create_connection(("192.0.2.1", int(sys.argv[2])), timeout=5); print("connected")
+        host = sys.argv[3] if len(sys.argv) > 3 else "192.0.2.1"
+        socket.create_connection((host, int(sys.argv[2])), timeout=5); print("connected")
     except ConnectionRefusedError:
         print("refused %.0fms" % ((time.monotonic() - start) * 1000))
     except OSError as e:
@@ -214,6 +219,15 @@ if "$PY" -c "import aioquic" 2>/dev/null; then
     check "QUIC bloqueado por SNI del Initial" "quic-failed TimeoutError" "$(app "$PY" "$WORK/client.py" quic ads.doubleclick.net)"
 else
     echo "SKIP QUIC: falta aioquic (pip install aioquic)"
+fi
+# Anti-bypass: an app with its own resolver, DoH by IP, TLS and QUIC on unusual ports.
+check "DNS forzado aunque vaya a un resolvedor cualquiera" "192.0.2.1" "$(app "$PY" "$WORK/client.py" dns 203.0.113.53 example.org)"
+check "DoH a una IP de la lista cortado" "refused*" "$(app "$PY" "$WORK/client.py" refused 8443 192.0.2.9)"
+check "HTTPS en puerto no estándar permitido" "hello through the tunnel" "$(app curl -sk --max-time 5 --resolve allowed.example:9443:192.0.2.1 https://allowed.example:9443/small)"
+check "HTTPS en puerto no estándar bloqueado por SNI" "blocked (curl [35][56])" "$(app curl -sk --max-time 5 --resolve ads.doubleclick.net:9443:192.0.2.1 https://ads.doubleclick.net:9443/small >/dev/null 2>&1 && echo served || echo "blocked (curl $?)")"
+if "$PY" -c "import aioquic" 2>/dev/null; then
+    check "QUIC en puerto no estándar permitido" "quic-ok" "$(app "$PY" "$WORK/client.py" quic allowed.example 4433)"
+    check "QUIC en puerto no estándar bloqueado" "quic-failed TimeoutError" "$(app "$PY" "$WORK/client.py" quic ads.doubleclick.net 4433)"
 fi
 check "HTTP bloqueado por Host" "blocked*" "$(out=$(app curl -s --max-time 5 -H 'Host: ads.doubleclick.net' http://192.0.2.1:8080/small); [[ -z "$out" ]] && echo blocked || echo "served: $out")"
 

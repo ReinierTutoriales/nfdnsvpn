@@ -22,7 +22,7 @@ class ShieldSettingsTest {
     @Test
     fun defaultListsAreTheDocumentedOnes() {
         val defaults = ListRepository.ALL_LISTS.filter { it.enabledByDefault }.map { it.id }
-        assertEquals(listOf("adguard-dns", "hagezi-pro", "hagezi-doh"), defaults)
+        assertEquals(listOf("adguard-dns", "hagezi-pro", "hagezi-doh", "doh-ips"), defaults)
         assertEquals(listOf("oisd-small"), ListRepository.selected(setOf("oisd-small", "unknown")).map { it.id })
     }
 }

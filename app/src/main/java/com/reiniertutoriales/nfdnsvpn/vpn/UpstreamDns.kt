@@ -6,6 +6,7 @@ import android.net.LinkProperties
 import android.net.Network
 import android.os.Build
 import java.net.Inet6Address
+import java.net.InetAddress
 
 /**
  * Watches the real network (usually the router): its resolvers, which allowed queries are
@@ -26,9 +27,17 @@ class UpstreamDns(
     /** IPv6 default route on the real network when this object was created. */
     val hasIpv6: Boolean
 
+    /**
+     * The real network's resolvers when this object was created (usually the router). They are
+     * routed into the tunnel too, so an app sending DNS straight to the router is filtered.
+     */
+    val initialServers: List<InetAddress>
+
     init {
         val properties = connectivity.activeNetwork?.let(connectivity::getLinkProperties)
         hasIpv6 = properties?.routes?.any { it.isDefaultRoute && it.destination.address is Inet6Address } == true
+        initialServers = properties?.dnsServers.orEmpty()
+            .filterNot { ShieldVpnService.isVirtualAddress(it) || it.isLinkLocalAddress || it.isLoopbackAddress }
         properties?.let(::update)
         connectivity.registerDefaultNetworkCallback(callback)
     }

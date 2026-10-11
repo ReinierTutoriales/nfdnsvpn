@@ -10,13 +10,16 @@ Premisas, arquitectura y fases: [`docs/PLAN.md`](docs/PLAN.md).
 
 Dos modos, elegibles con el botón **Modo** de la pantalla:
 
-- **Ligero (por defecto):** solo el DNS pasa por la app. Coste casi nulo.
-- **Completo:** todo el tráfico salvo la red local pasa por una pila TCP/IP propia (smoltcp) y
+- **Completo (por defecto):** todo el tráfico salvo la red local pasa por una pila TCP/IP propia (smoltcp) y
   se reenvía. Fuerza el DNS de cualquier app y corta DoT y DNS por TCP en cualquier servidor.
   En PC mueve más de 1 Gbit/s con unos 10 MB de RAM; falta medirlo en la TV.
   Además lee el nombre del servidor de cada conexión HTTPS (SNI) o HTTP (`Host`) y corta las
   de anuncios, rastreadores y DNS cifrado aunque la app no haya usado nuestro DNS.
   También en QUIC/HTTP3: lee el nombre del primer paquete; si no puede, fuerza a la app a TCP.
+  Blindado contra bypass del DNS: resolvedor propio, DNS al router, DoT/DoQ, DoH por nombre o
+  por IP, y TLS o QUIC en puertos raros (ver `docs/PLAN.md`).
+- **Ligero:** solo el DNS pasa por la app. Coste casi nulo, pero una app con DNS propio se lo
+  puede saltar.
 
 Lo que hacen ambos modos:
 
@@ -48,6 +51,8 @@ Lo que hacen ambos modos:
    app). Como alternativa del sistema: Ajustes › Red e Internet › VPN › NF DNS VPN ›
    **VPN siempre activa**.
 5. Si el DNS privado del sistema está en modo estricto, desactívalo (la app lo avisa).
+6. Para que nada salga sin filtrar si la protección se detiene: Ajustes › Red e Internet › VPN ›
+   NF DNS VPN › «VPN siempre activa» y «Bloquear conexiones sin VPN» (la app lo avisa si falta).
 
 Cada build de CI se firma con una clave de depuración distinta: para instalar una versión nueva
 encima de otra puede hacer falta desinstalar antes.

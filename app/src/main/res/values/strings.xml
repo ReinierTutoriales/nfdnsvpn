@@ -14,6 +14,7 @@
     <string name="error_prefix">Error: %1$s</string>
     <string name="error_no_permission">No se concedió el permiso de VPN</string>
     <string name="warning_private_dns">El DNS privado del sistema está en modo estricto (%1$s) y se salta el filtro. Desactívalo en Ajustes › Red e Internet › DNS privado.</string>
+    <string name="warning_lockdown">Para que ninguna app se salte el filtro si la protección se detiene (actualización, falta de memoria), activa en Ajustes › Red e Internet › VPN › NF DNS VPN: «VPN siempre activa» y «Bloquear conexiones sin VPN». Las apps excluidas se quedarían sin red.</string>
     <string name="lists_title">Listas</string>
     <string name="list_missing">sin descargar</string>
     <string name="list_update_failed">no se pudo actualizar (%1$s)</string>

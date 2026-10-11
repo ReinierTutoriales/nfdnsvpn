@@ -17,10 +17,11 @@ object ShieldSettings {
     private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
     /**
-     * Full tunnel: all traffic goes through the app (DNS, plus the stack and relay). Off by default
-     * until it has been measured on the target TV; light mode only routes DNS.
+     * Full tunnel (default): all traffic goes through the app, so no app can get around the
+     * filter with its own resolver, encrypted DNS or QUIC. Light mode only routes DNS and the
+     * known resolvers: cheaper, but an app with its own DNS server can bypass it.
      */
-    fun isFullTunnel(context: Context) = prefs(context).getBoolean(FULL_TUNNEL, false)
+    fun isFullTunnel(context: Context) = prefs(context).getBoolean(FULL_TUNNEL, true)
 
     fun setFullTunnel(context: Context, enabled: Boolean) = prefs(context).edit { putBoolean(FULL_TUNNEL, enabled) }
 

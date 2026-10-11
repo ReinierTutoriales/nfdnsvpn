@@ -20,6 +20,7 @@ import com.reiniertutoriales.nfdnsvpn.core.NativeTunnel
 import com.reiniertutoriales.nfdnsvpn.lists.ListRepository
 import com.reiniertutoriales.nfdnsvpn.ui.MainActivity
 import java.io.IOException
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -190,7 +191,10 @@ class ShieldVpnService : VpnService() {
                 tunnel?.setUpstream(list)
             }, onPrivateDns = { ShieldState.privateDnsStrict = it })
             if (stopping) return
-            tun = establish(fullTunnel, upstream.hasIpv6) ?: throw IOException(getString(R.string.error_no_permission))
+            tun = establish(fullTunnel, upstream.hasIpv6, upstream.initialServers) ?: throw IOException(getString(R.string.error_no_permission))
+            // Without "Block connections without VPN", traffic flows unfiltered whenever this
+            // service is not running (crash, update, low memory kill): the screen warns about it.
+            ShieldState.lockdown = Build.VERSION.SDK_INT < 29 || isLockdownEnabled
             // The tunnel takes over the filter handle.
             current = NativeTunnel(filter, tun.fd, INTERCEPTED).also { filter = 0L }
             // Published before the first push, so a network change in between is not lost.
@@ -262,7 +266,7 @@ class ShieldVpnService : VpnService() {
         return handle
     }
 
-    private fun establish(fullTunnel: Boolean, hasIpv6: Boolean): ParcelFileDescriptor? {
+    private fun establish(fullTunnel: Boolean, hasIpv6: Boolean, networkResolvers: List<InetAddress>): ParcelFileDescriptor? {
         val builder = Builder()
             .setSession(getString(R.string.app_name))
             .setMtu(1500)
@@ -278,6 +282,12 @@ class ShieldVpnService : VpnService() {
             )
         PUBLIC_RESOLVERS_V4.forEach { builder.addRoute(it, 32) }
         PUBLIC_RESOLVERS_V6.forEach { builder.addRoute(it, 128) }
+        // The router's DNS is on the LAN, which the full tunnel leaves out: route just that
+        // address, so DNS sent straight to it is filtered while the rest of the LAN stays direct.
+        for (resolver in networkResolvers) {
+            runCatching { builder.addRoute(resolver, if (resolver is Inet4Address) 32 else 128) }
+                .onFailure { Log.w(TAG, "Cannot route resolver ${resolver.hostAddress}", it) }
+        }
         if (fullTunnel) {
             Routes.fullV4.forEach { builder.addRoute(it.address, it.prefix) }
             // Without IPv6 upstream, routing ::/0 would make apps try IPv6 first and fail.
