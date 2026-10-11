@@ -6,7 +6,16 @@ HTTPS. En el lanzador aparece como **NF DNS VPN**.
 
 Premisas, arquitectura y fases: [`docs/PLAN.md`](docs/PLAN.md).
 
-## Estado: fase 1 (modo ligero, solo DNS)
+## Estado: fase 2 (túnel completo, en pruebas)
+
+Dos modos, elegibles con el botón **Modo** de la pantalla:
+
+- **Ligero (por defecto):** solo el DNS pasa por la app. Coste casi nulo.
+- **Completo:** todo el tráfico salvo la red local pasa por una pila TCP/IP propia (smoltcp) y
+  se reenvía. Fuerza el DNS de cualquier app y corta DoT y DNS por TCP en cualquier servidor.
+  En PC mueve más de 1 Gbit/s con unos 8 MB de RAM; falta medirlo en la TV.
+
+Lo que hacen ambos modos:
 
 - Filtra el DNS de **todas las apps**: los dominios bloqueados reciben `0.0.0.0` / `::`.
 - También filtra a las apps que usan DNS público fijo (Google, Cloudflare, Quad9, OpenDNS,
@@ -36,6 +45,7 @@ Requisitos: JDK 21, Android SDK con NDK `28.2.13676358`, Rust (`rustup`).
 
 ```bash
 (cd native/nfdns-core && cargo test)   # núcleo Rust
+sudo scripts/e2e-linux.sh              # túnel con un TUN real (Linux, root, iproute2, curl)
 ./gradlew testDebugUnitTest lintDebug  # tests JVM contra la librería nativa + lint
 ./gradlew assembleDebug                # app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -51,8 +61,9 @@ cargo run --release --example measure -- lista1.txt lista2.txt
 
 | Ruta | Contenido |
 |---|---|
-| `native/nfdns-core` | Núcleo Rust: paquetes IP/UDP/TCP, DNS, filtro de dominios, JNI |
-| `app/src/main/java/.../vpn` | `ShieldVpnService` (TUN, reenvío DNS), DNS de subida, estado |
+| `native/nfdns-core` | Núcleo Rust: clasificador, DNS, filtro de dominios, túnel (pila TCP/IP y relay), JNI |
+| `scripts/e2e-linux.sh` | Prueba de extremo a extremo del túnel en *network namespaces* |
+| `app/src/main/java/.../vpn` | `ShieldVpnService` (TUN y rutas de cada modo), DNS de la red, ajustes, estado |
 | `app/src/main/java/.../lists` | Descarga y caché de listas |
 | `app/src/main/java/.../ui` | Pantalla para el mando |
 | `app/src/main/assets/video-ads.txt` | Lista propia de servidores de anuncios de vídeo |

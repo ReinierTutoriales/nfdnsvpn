@@ -44,6 +44,19 @@
             android:textColor="@color/button_text"
             android:textSize="20sp" />
 
+        <Button
+            android:id="@+id/mode"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/button_toggle"
+            android:minWidth="280dp"
+            android:paddingHorizontal="24dp"
+            android:paddingVertical="10dp"
+            android:textAllCaps="false"
+            android:textColor="@color/button_text"
+            android:textSize="16sp" />
+
         <TextView
             android:id="@+id/stats"
             android:layout_width="wrap_content"

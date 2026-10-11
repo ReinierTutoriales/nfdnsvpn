@@ -1,5 +1,7 @@
 package com.reiniertutoriales.nfdnsvpn.core
 
+import java.io.Closeable
+
 /** JNI entry points of native/nfdns-core. */
 object NativeCore {
     /** JVM unit tests point this property at a host build of the same library. */
@@ -10,44 +12,57 @@ object NativeCore {
         if (hostLibrary.isNullOrEmpty()) System.loadLibrary("nfdns") else System.load(hostLibrary)
     }
 
-    /** Compiles the lists into a filter; free it with [nativeDestroy]. */
+    /** Compiles the lists into a filter; free it with [nativeDestroy] or hand it to [nativeTunnelCreate]. */
     @JvmStatic external fun nativeCreate(lists: Array<String>): Long
     @JvmStatic external fun nativeDestroy(handle: Long)
     @JvmStatic external fun nativeRuleCount(handle: Long): Int
-    /** Encoded [PacketAction] for one packet read from the TUN. */
-    @JvmStatic external fun nativeHandle(handle: Long, packet: ByteArray): ByteArray
-    /** IP/UDP packet carrying [answer] back to the sender of [request]; empty if invalid. */
-    @JvmStatic external fun nativeWrapReply(request: ByteArray, answer: ByteArray): ByteArray
+
+    /** Takes ownership of [filter]. [intercepted]: comma-separated resolver addresses. */
+    @JvmStatic external fun nativeTunnelCreate(filter: Long, fd: Int, intercepted: String): Long
+    /** Comma-separated resolvers of the real network; a bare IP means port 53. */
+    @JvmStatic external fun nativeTunnelSetUpstream(tunnel: Long, servers: String)
+    /** Blocks until [nativeTunnelStop]; empty string, or the error that ended the tunnel. */
+    @JvmStatic external fun nativeTunnelRun(tunnel: Long): String
+    @JvmStatic external fun nativeTunnelStop(tunnel: Long)
+    /** `queries,blocked,tcp,udp` followed by recently blocked names, one per line. */
+    @JvmStatic external fun nativeTunnelStats(tunnel: Long): String
+    @JvmStatic external fun nativeTunnelFree(tunnel: Long)
 }
 
-/** Decoded result of [NativeCore.nativeHandle]: `[kind][name length: u16][name][data]`. */
-sealed class PacketAction {
-    object Ignore : PacketAction()
-    /** Blocked name answered locally: write [packet] to the TUN. */
-    class Blocked(val name: String, val packet: ByteArray) : PacketAction()
-    /** TCP to an intercepted resolver refused: write [packet] to the TUN. */
-    class Reset(val packet: ByteArray) : PacketAction()
-    /** Allowed: send [query] upstream, then wrap the answer with [NativeCore.nativeWrapReply]. */
-    class Forward(val name: String, val query: ByteArray) : PacketAction()
-
+class TunnelStats(val queries: Long, val blocked: Long, val tcp: Long, val udp: Long, val recent: List<String>) {
     companion object {
-        private const val KIND_BLOCKED = 1
-        private const val KIND_RESET = 2
-        private const val KIND_FORWARD = 3
-
-        fun decode(encoded: ByteArray): PacketAction {
-            if (encoded.size < 3) return Ignore
-            val nameLength = ((encoded[1].toInt() and 0xFF) shl 8) or (encoded[2].toInt() and 0xFF)
-            val dataStart = 3 + nameLength
-            if (dataStart > encoded.size) return Ignore
-            val name = String(encoded, 3, nameLength, Charsets.US_ASCII)
-            val data = encoded.copyOfRange(dataStart, encoded.size)
-            return when (encoded[0].toInt()) {
-                KIND_BLOCKED -> Blocked(name, data)
-                KIND_RESET -> Reset(data)
-                KIND_FORWARD -> Forward(name, data)
-                else -> Ignore
-            }
+        fun parse(encoded: String): TunnelStats? {
+            val lines = encoded.split('\n')
+            val numbers = lines.first().split(',').mapNotNull(String::toLongOrNull)
+            if (numbers.size != 4) return null
+            return TunnelStats(numbers[0], numbers[1], numbers[2], numbers[3], lines.drop(1).filter(String::isNotEmpty))
         }
+    }
+}
+
+/**
+ * Owns a native tunnel. [run] blocks on the caller's thread; [stop], [setUpstream] and [stats]
+ * may be called from any thread until [close], which must come after [run] has returned.
+ */
+class NativeTunnel(filter: Long, fd: Int, intercepted: List<String>) : Closeable {
+    private var handle = NativeCore.nativeTunnelCreate(filter, fd, intercepted.joinToString(","))
+
+    fun run(): String = NativeCore.nativeTunnelRun(handle)
+
+    @Synchronized fun stop() {
+        if (handle != 0L) NativeCore.nativeTunnelStop(handle)
+    }
+
+    @Synchronized fun setUpstream(servers: List<String>) {
+        if (handle != 0L) NativeCore.nativeTunnelSetUpstream(handle, servers.joinToString(","))
+    }
+
+    @Synchronized fun stats(): TunnelStats? =
+        if (handle != 0L) TunnelStats.parse(NativeCore.nativeTunnelStats(handle)) else null
+
+    @Synchronized override fun close() {
+        val freed = handle
+        handle = 0L
+        if (freed != 0L) NativeCore.nativeTunnelFree(freed)
     }
 }

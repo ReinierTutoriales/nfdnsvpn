@@ -40,6 +40,12 @@ jobs:
         working-directory: native/nfdns-core
         run: cargo test --locked
 
+      # Real TUN in network namespaces: DNS, TCP and UDP through the userspace stack.
+      - name: Tunnel end-to-end test
+        run: |
+          (cd native/nfdns-core && cargo build --locked --release --example linux_tun)
+          sudo TUNNEL_BIN="$PWD/native/nfdns-core/target/release/examples/linux_tun" scripts/e2e-linux.sh
+
       - name: Unit tests and lint
         run: ./gradlew testDebugUnitTest lintDebug --stacktrace
 

@@ -12,6 +12,7 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import com.reiniertutoriales.nfdnsvpn.R
+import com.reiniertutoriales.nfdnsvpn.vpn.ShieldSettings
 import com.reiniertutoriales.nfdnsvpn.vpn.ShieldState
 import com.reiniertutoriales.nfdnsvpn.vpn.ShieldVpnService
 import java.util.Date
@@ -20,6 +21,7 @@ import java.util.Date
 class MainActivity : ComponentActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var toggle: Button
+    private lateinit var mode: Button
     private lateinit var status: TextView
     private lateinit var stats: TextView
     private lateinit var warning: TextView
@@ -43,12 +45,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         toggle = findViewById(R.id.toggle)
+        mode = findViewById(R.id.mode)
         status = findViewById(R.id.status)
         stats = findViewById(R.id.stats)
         warning = findViewById(R.id.warning)
         lists = findViewById(R.id.lists)
         recent = findViewById(R.id.recent)
         toggle.setOnClickListener { onToggle() }
+        mode.setOnClickListener { onModeChange() }
         toggle.requestFocus()
     }
 
@@ -73,6 +77,13 @@ class MainActivity : ComponentActivity() {
         render()
     }
 
+    /** Takes effect at once when the VPN is running, otherwise on the next start. */
+    private fun onModeChange() {
+        ShieldSettings.setFullTunnel(this, !ShieldSettings.isFullTunnel(this))
+        if (ShieldState.phase != ShieldState.Phase.STOPPED) ShieldVpnService.restart(this)
+        render()
+    }
+
     private fun render() {
         val phase = ShieldState.phase
         toggle.setText(if (phase == ShieldState.Phase.STOPPED) R.string.action_start else R.string.action_stop)
@@ -80,10 +91,17 @@ class MainActivity : ComponentActivity() {
             when (phase) {
                 ShieldState.Phase.STOPPED -> R.string.status_stopped
                 ShieldState.Phase.STARTING -> R.string.status_starting
-                ShieldState.Phase.RUNNING -> R.string.status_running
+                ShieldState.Phase.RUNNING ->
+                    if (ShieldState.fullTunnel) R.string.status_running_full else R.string.status_running_light
             }
         )
-        stats.text = getString(R.string.stats, ShieldState.rules, ShieldState.queries.get(), ShieldState.blocked.get())
+        mode.setText(if (ShieldSettings.isFullTunnel(this)) R.string.mode_full else R.string.mode_light)
+        val counters = ShieldState.stats
+        val lines = mutableListOf(getString(R.string.stats, ShieldState.rules, counters?.queries ?: 0L, counters?.blocked ?: 0L))
+        if (phase == ShieldState.Phase.RUNNING && ShieldState.fullTunnel && counters != null) {
+            lines += getString(R.string.stats_connections, counters.tcp, counters.udp)
+        }
+        stats.text = lines.joinToString("\n")
 
         val problems = listOfNotNull(
             ShieldState.error?.let { getString(R.string.error_prefix, it) },
@@ -99,7 +117,7 @@ class MainActivity : ComponentActivity() {
             "${list.name}: $updated$failure"
         }
 
-        val names = ShieldState.recentBlocked()
+        val names = counters?.recent.orEmpty()
         recent.text = if (names.isEmpty()) getString(R.string.recent_empty) else names.joinToString("\n")
     }
 }

@@ -5,8 +5,12 @@
     <string name="action_stop">Desactivar protección</string>
     <string name="status_stopped">Protección desactivada</string>
     <string name="status_starting">Cargando listas…</string>
-    <string name="status_running">Protegiendo todas las apps (modo ligero: DNS)</string>
+    <string name="status_running_light">Protegiendo todas las apps (modo ligero: solo DNS)</string>
+    <string name="status_running_full">Protegiendo todas las apps (modo completo: todo el tráfico)</string>
+    <string name="mode_light">Modo: ligero (solo DNS)</string>
+    <string name="mode_full">Modo: completo (todo el tráfico)</string>
     <string name="stats">Dominios en las listas: %1$d\nConsultas: %2$d · Bloqueadas: %3$d</string>
+    <string name="stats_connections">Conexiones activas: %1$d TCP · %2$d UDP</string>
     <string name="error_prefix">Error: %1$s</string>
     <string name="error_no_permission">No se concedió el permiso de VPN</string>
     <string name="warning_private_dns">El DNS privado del sistema está en modo estricto (%1$s) y se salta el filtro. Desactívalo en Ajustes › Red e Internet › DNS privado.</string>

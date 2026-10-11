@@ -9,38 +9,34 @@ import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.system.ErrnoException
-import android.system.Os
-import android.system.OsConstants
-import android.system.StructPollfd
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.reiniertutoriales.nfdnsvpn.R
 import com.reiniertutoriales.nfdnsvpn.core.NativeCore
-import com.reiniertutoriales.nfdnsvpn.core.PacketAction
+import com.reiniertutoriales.nfdnsvpn.core.NativeTunnel
 import com.reiniertutoriales.nfdnsvpn.lists.ListRepository
 import com.reiniertutoriales.nfdnsvpn.ui.MainActivity
-import java.io.FileDescriptor
 import java.io.IOException
-import java.net.DatagramPacket
-import java.net.DatagramSocket
 import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Light mode (phase 1): only DNS reaches the TUN. The device resolver points at a virtual
- * address inside the tunnel, and the well-known public resolvers are routed into it as well, so
- * apps that hardcode 8.8.8.8 or 1.1.1.1 are filtered too. Everything else goes out directly.
+ * Local VPN. The packet loop runs in the Rust core ([NativeTunnel]) in both modes:
+ * - light: only DNS reaches the TUN (a virtual resolver plus the public resolvers' addresses);
+ * - full: all traffic except LAN and multicast, terminated by a userspace TCP/IP stack and relayed.
+ * The app excludes itself, so the core's own sockets never loop back into the tunnel.
  */
 class ShieldVpnService : VpnService() {
     companion object {
         private const val TAG = "ShieldVpn"
         const val ACTION_START = "com.reiniertutoriales.nfdnsvpn.START"
         const val ACTION_STOP = "com.reiniertutoriales.nfdnsvpn.STOP"
+        /** Applies a mode change: stops the running tunnel and starts a new one. */
+        const val ACTION_RESTART = "com.reiniertutoriales.nfdnsvpn.RESTART"
         private const val CHANNEL = "shield"
         private const val NOTIFICATION_ID = 1
 
@@ -58,43 +54,42 @@ class ShieldVpnService : VpnService() {
             "2001:4860:4860::8888", "2001:4860:4860::8844", "2606:4700:4700::1111", "2606:4700:4700::1001",
             "2620:fe::fe", "2620:fe::9", "2620:119:35::35", "2620:119:53::53",
         )
+        /** Resolver addresses whose non-DNS traffic (DoH, QUIC) is refused by the core. */
+        private val INTERCEPTED = listOf(DNS_V4, DNS_V6) + PUBLIC_RESOLVERS_V4 + PUBLIC_RESOLVERS_V6
 
-        private const val DNS_PORT = 53
-        private const val UPSTREAM_TIMEOUT_MS = 2500
-        private const val MAX_PACKET = 32767
-        private const val MAX_DNS_MESSAGE = 65535
-        private const val POLL_MS = 500
+        private const val STATS_INTERVAL_MS = 1000L
 
         private val virtualAddresses = listOf(DNS_V4, DNS_V6, CLIENT_V4, CLIENT_V6).map(InetAddress::getByName)
 
         fun isVirtualAddress(address: InetAddress) = address in virtualAddresses
 
-        fun start(context: Context) {
-            context.startService(Intent(context, ShieldVpnService::class.java).setAction(ACTION_START))
-        }
+        fun start(context: Context) = send(context, ACTION_START)
+        fun stop(context: Context) = send(context, ACTION_STOP)
+        fun restart(context: Context) = send(context, ACTION_RESTART)
 
-        fun stop(context: Context) {
-            context.startService(Intent(context, ShieldVpnService::class.java).setAction(ACTION_STOP))
+        private fun send(context: Context, action: String) {
+            context.startService(Intent(context, ShieldVpnService::class.java).setAction(action))
         }
     }
 
     @Volatile private var stopping = false
+    @Volatile private var tunnel: NativeTunnel? = null
     private var worker: Thread? = null
-    /** Guards TUN writes against close: a closed fd number can be reused by another file. */
-    private val tunLock = Any()
-    private var tunClosed = true
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            shutdown()
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                shutdown()
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_RESTART -> shutdown()
         }
         // ACTION_START from the UI, or SERVICE_INTERFACE when Android starts an always-on VPN.
         promoteToForeground()
         if (worker == null) {
             stopping = false
-            worker = Thread(::run, "shield-tun").also { it.start() }
+            worker = Thread(::run, "shield-tunnel").also { it.start() }
         }
         return START_STICKY
     }
@@ -111,6 +106,7 @@ class ShieldVpnService : VpnService() {
 
     private fun shutdown() {
         stopping = true
+        tunnel?.stop()
         worker?.let { thread ->
             thread.interrupt()
             runCatching { thread.join(3000) }
@@ -149,36 +145,51 @@ class ShieldVpnService : VpnService() {
     }
 
     private fun run() {
+        val fullTunnel = ShieldSettings.isFullTunnel(this)
         ShieldState.phase = ShieldState.Phase.STARTING
+        ShieldState.fullTunnel = fullTunnel
         ShieldState.error = null
-        var handle = 0L
+        ShieldState.stats = null
+        var filter = 0L
         var tun: ParcelFileDescriptor? = null
         var upstream: UpstreamDns? = null
-        val forwarders = ThreadPoolExecutor(2, 16, 30, TimeUnit.SECONDS, ArrayBlockingQueue(256), ThreadPoolExecutor.DiscardPolicy())
+        var current: NativeTunnel? = null
+        var poller: ScheduledExecutorService? = null
         try {
-            handle = loadFilter()
-            upstream = UpstreamDns(this) { ShieldState.privateDnsStrict = it }
+            filter = loadFilter()
+            val servers = AtomicReference<List<String>>(emptyList())
+            upstream = UpstreamDns(this, onServers = { list ->
+                servers.set(list)
+                tunnel?.setUpstream(list)
+            }, onPrivateDns = { ShieldState.privateDnsStrict = it })
             if (stopping) return
-            tun = establish() ?: throw IOException(getString(R.string.error_no_permission))
-            synchronized(tunLock) { tunClosed = false }
-            ShieldState.resetCounters()
+            tun = establish(fullTunnel, upstream.hasIpv6) ?: throw IOException(getString(R.string.error_no_permission))
+            // The tunnel takes over the filter handle.
+            current = NativeTunnel(filter, tun.fd, INTERCEPTED).also { filter = 0L }
+            // Published before the first push, so a network change in between is not lost.
+            tunnel = current
+            current.setUpstream(servers.get())
+            if (stopping) return
+            poller = Executors.newSingleThreadScheduledExecutor().apply {
+                scheduleWithFixedDelay({ ShieldState.stats = current.stats() }, 0, STATS_INTERVAL_MS, TimeUnit.MILLISECONDS)
+            }
             ShieldState.phase = ShieldState.Phase.RUNNING
-            loop(tun.fileDescriptor, handle, upstream, forwarders)
+            val failure = current.run()
+            if (failure.isNotEmpty() && !stopping) throw IOException(failure)
         } catch (e: Exception) {
             if (!stopping) {
                 Log.e(TAG, "VPN stopped", e)
                 ShieldState.error = e.message ?: e.javaClass.simpleName
             }
         } finally {
-            forwarders.shutdownNow()
-            runCatching { forwarders.awaitTermination(3, TimeUnit.SECONDS) }
-            synchronized(tunLock) {
-                tunClosed = true
-                runCatching { tun?.close() }
-            }
+            poller?.shutdownNow()
+            runCatching { poller?.awaitTermination(2, TimeUnit.SECONDS) }
+            tunnel = null
+            // run() has returned (or never started), so nothing else uses the native tunnel.
+            current?.close()
+            if (filter != 0L) NativeCore.nativeDestroy(filter)
             upstream?.close()
-            // Forward tasks never touch the filter handle, so it can go once the loop ended.
-            if (handle != 0L) NativeCore.nativeDestroy(handle)
+            runCatching { tun?.close() }
             ShieldState.phase = ShieldState.Phase.STOPPED
             if (!stopping) stopSelf()
         }
@@ -193,7 +204,7 @@ class ShieldVpnService : VpnService() {
         return handle
     }
 
-    private fun establish(): ParcelFileDescriptor? {
+    private fun establish(fullTunnel: Boolean, hasIpv6: Boolean): ParcelFileDescriptor? {
         val builder = Builder()
             .setSession(getString(R.string.app_name))
             .setMtu(1500)
@@ -209,76 +220,15 @@ class ShieldVpnService : VpnService() {
             )
         PUBLIC_RESOLVERS_V4.forEach { builder.addRoute(it, 32) }
         PUBLIC_RESOLVERS_V6.forEach { builder.addRoute(it, 128) }
-        // Our own list downloads and upstream queries must not loop back into the tunnel.
+        if (fullTunnel) {
+            Routes.fullV4.forEach { builder.addRoute(it.address, it.prefix) }
+            // Without IPv6 upstream, routing ::/0 would make apps try IPv6 first and fail.
+            if (hasIpv6) Routes.FULL_V6.forEach { builder.addRoute(it.address, it.prefix) }
+        }
+        // Our own list downloads, DNS forwarding and relay sockets must not loop back.
         builder.addDisallowedApplication(packageName)
         // VPNs are metered by default since Android 10, which makes streaming apps lower quality.
         if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
         return builder.establish()
-    }
-
-    private fun loop(fd: FileDescriptor, handle: Long, upstream: UpstreamDns, forwarders: ThreadPoolExecutor) {
-        val buffer = ByteArray(MAX_PACKET)
-        val poll = arrayOf(StructPollfd().apply { this.fd = fd; events = OsConstants.POLLIN.toShort() })
-        while (!stopping) {
-            // A timed poll instead of a blocking read: closing a TUN fd does not wake a blocked read.
-            val length = try {
-                if (Os.poll(poll, POLL_MS) == 0) continue
-                Os.read(fd, buffer, 0, buffer.size)
-            } catch (e: ErrnoException) {
-                if (e.errno == OsConstants.EAGAIN || e.errno == OsConstants.EINTR) continue
-                throw e
-            }
-            if (length <= 0) continue
-            val packet = buffer.copyOf(length)
-            when (val action = PacketAction.decode(NativeCore.nativeHandle(handle, packet))) {
-                is PacketAction.Blocked -> {
-                    ShieldState.queries.incrementAndGet()
-                    ShieldState.recordBlocked(action.name)
-                    write(fd, action.packet)
-                }
-                is PacketAction.Reset -> write(fd, action.packet)
-                is PacketAction.Forward -> {
-                    ShieldState.queries.incrementAndGet()
-                    forwarders.execute { forward(fd, packet, action.query, upstream) }
-                }
-                PacketAction.Ignore -> Unit
-            }
-        }
-    }
-
-    private fun forward(fd: FileDescriptor, request: ByteArray, query: ByteArray, upstream: UpstreamDns) {
-        for (server in upstream.servers().take(2)) {
-            try {
-                DatagramSocket().use { socket ->
-                    protect(socket)
-                    socket.soTimeout = UPSTREAM_TIMEOUT_MS
-                    socket.connect(InetSocketAddress(server, DNS_PORT))
-                    socket.send(DatagramPacket(query, query.size))
-                    val answer = ByteArray(MAX_DNS_MESSAGE)
-                    while (true) {
-                        val received = DatagramPacket(answer, answer.size)
-                        socket.receive(received)
-                        // Same transaction ID as the query, or it is not our answer.
-                        if (received.length >= 2 && answer[0] == query[0] && answer[1] == query[1]) {
-                            val reply = NativeCore.nativeWrapReply(request, answer.copyOf(received.length))
-                            if (reply.isNotEmpty()) write(fd, reply)
-                            return
-                        }
-                    }
-                }
-            } catch (e: IOException) {
-                Log.d(TAG, "Upstream $server failed: ${e.message}")
-            }
-        }
-    }
-
-    private fun write(fd: FileDescriptor, packet: ByteArray) {
-        try {
-            synchronized(tunLock) {
-                if (!tunClosed) Os.write(fd, packet, 0, packet.size)
-            }
-        } catch (e: ErrnoException) {
-            Log.d(TAG, "TUN write failed: ${e.message}")
-        }
     }
 }

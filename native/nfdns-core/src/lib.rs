@@ -1,86 +1,53 @@
-//! Core of the nfdnsvpn local VPN: classifies the packets read from the TUN interface and filters
-//! DNS names. Socket I/O stays in Kotlin (`ShieldVpnService`), so everything here is pure and
-//! runs in host unit tests.
+//! Core of the nfdnsvpn local VPN: packet classification, DNS filtering and the tunnel event
+//! loop (userspace TCP/IP stack and relay).
 //!
-//! Handles are raw pointers to boxed filters owned by `com.reiniertutoriales.nfdnsvpn.core.NativeCore`.
+//! Handles are raw pointers to boxed values owned by `com.reiniertutoriales.nfdnsvpn.core.NativeCore`:
+//! a filter handle lives until `nativeDestroy` or until `nativeTunnelCreate` takes it over, and a
+//! tunnel handle lives until `nativeTunnelFree`.
 
 pub mod dns;
 pub mod filter;
 pub mod packet;
+pub mod route;
+pub mod tunnel;
 
 use filter::{Filter, FilterBuilder};
 use jni::errors::ThrowRuntimeExAndDefault;
-use jni::objects::{JByteArray, JClass, JObjectArray, JString};
+use jni::objects::{JClass, JObjectArray, JString};
 use jni::sys::{jint, jlong};
 use jni::EnvUnowned;
-use packet::{PROTO_TCP, PROTO_UDP};
+use std::net::{IpAddr, SocketAddr};
+use tunnel::Tunnel;
 
 const DNS_PORT: u16 = 53;
 
-#[derive(Debug, PartialEq)]
-pub enum Action {
-    /// Nothing to send back (unsupported or malformed packet).
-    Ignore,
-    /// Blocked DNS name answered locally; `packet` goes back to the TUN.
-    Blocked { packet: Vec<u8>, name: String },
-    /// TCP to an intercepted resolver (DoT, DoH, DNS over TCP) refused with a RST.
-    Reset { packet: Vec<u8> },
-    /// Allowed query: send `query` upstream and wrap the answer with [`wrap_reply`].
-    Forward { query: Vec<u8>, name: String },
+/// Comma-separated addresses; a bare IP means port 53. Invalid entries are skipped.
+pub fn parse_servers(list: &str) -> Vec<SocketAddr> {
+    list.split(',')
+        .map(str::trim)
+        .filter_map(|entry| {
+            entry
+                .parse::<SocketAddr>()
+                .ok()
+                .or_else(|| entry.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, DNS_PORT)))
+        })
+        .collect()
 }
 
-/// Only DNS reaches the TUN in light mode: the virtual resolver and the public resolvers routed
-/// into it. Everything else sent to those addresses is a bypass attempt.
-pub fn handle(filter: &Filter, data: &[u8]) -> Action {
-    let Some(p) = packet::parse(data) else { return Action::Ignore };
-    match (p.protocol, p.dst_port) {
-        (PROTO_UDP, DNS_PORT) => match dns::parse_query(p.payload) {
-            Some(q) if filter.is_blocked(&q.name) => {
-                let answer = dns::blocked_response(p.payload, &q);
-                Action::Blocked { packet: packet::udp_reply(&p, &answer), name: q.name }
-            }
-            Some(q) => Action::Forward { query: p.payload.to_vec(), name: q.name },
-            // Unusual but well-formed messages are left for the upstream resolver to judge.
-            None if p.payload.len() >= 12 => Action::Forward { query: p.payload.to_vec(), name: String::new() },
-            None => Action::Ignore,
-        },
-        (PROTO_TCP, _) => packet::tcp_reset(&p).map_or(Action::Ignore, |packet| Action::Reset { packet }),
-        // QUIC/HTTP3 and other UDP to a resolver address: dropped, apps fall back to plain DNS.
-        _ => Action::Ignore,
-    }
-}
-
-/// IP/UDP packet carrying the upstream `answer` back to the app that sent `request`.
-pub fn wrap_reply(request: &[u8], answer: &[u8]) -> Option<Vec<u8>> {
-    let p = packet::parse(request)?;
-    (p.protocol == PROTO_UDP).then(|| packet::udp_reply(&p, answer))
-}
-
-const KIND_IGNORE: u8 = 0;
-const KIND_BLOCKED: u8 = 1;
-const KIND_RESET: u8 = 2;
-const KIND_FORWARD: u8 = 3;
-
-/// `[kind][name length: u16][name][data]`, one JNI call per packet.
-fn encode(action: Action) -> Vec<u8> {
-    let (kind, name, data) = match action {
-        Action::Ignore => (KIND_IGNORE, String::new(), Vec::new()),
-        Action::Blocked { packet, name } => (KIND_BLOCKED, name, packet),
-        Action::Reset { packet } => (KIND_RESET, String::new(), packet),
-        Action::Forward { query, name } => (KIND_FORWARD, name, query),
-    };
-    let mut out = Vec::with_capacity(3 + name.len() + data.len());
-    out.push(kind);
-    out.extend_from_slice(&(name.len() as u16).to_be_bytes());
-    out.extend_from_slice(name.as_bytes());
-    out.extend_from_slice(&data);
-    out
+fn parse_addresses(list: &str) -> Vec<IpAddr> {
+    list.split(',').filter_map(|entry| entry.trim().parse().ok()).collect()
 }
 
 fn filter<'a>(handle: jlong) -> Option<&'a Filter> {
-    // SAFETY: handles are only produced by `nativeCreate` and destroyed once by `nativeDestroy`,
-    // after the packet loop that uses them has stopped.
+    // SAFETY: filter handles come from `nativeCreate` and are released exactly once, by
+    // `nativeDestroy` or `nativeTunnelCreate`.
     (handle != 0).then(|| unsafe { &*(handle as *const Filter) })
+}
+
+fn tunnel<'a>(handle: jlong) -> Option<&'a Tunnel> {
+    // SAFETY: tunnel handles come from `nativeTunnelCreate`; Kotlin stops every other caller
+    // before `nativeTunnelFree`.
+    (handle != 0).then(|| unsafe { &*(handle as *const Tunnel) })
 }
 
 #[unsafe(no_mangle)]
@@ -109,7 +76,7 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
     handle: jlong,
 ) {
     if handle != 0 {
-        // SAFETY: see `filter`; Kotlin clears its copy of the handle before calling this.
+        // SAFETY: see `filter`.
         drop(unsafe { Box::from_raw(handle as *mut Filter) });
     }
 }
@@ -123,96 +90,113 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
     filter(handle).map_or(0, |f| f.rule_count() as jint)
 }
 
+/// Takes ownership of the filter handle; the caller must not destroy it afterwards.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeHandle<'caller>(
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelCreate<'caller>(
     mut unowned: EnvUnowned<'caller>,
     _class: JClass<'caller>,
-    handle: jlong,
-    packet: JByteArray<'caller>,
-) -> JByteArray<'caller> {
+    filter_handle: jlong,
+    fd: jint,
+    intercepted: JString<'caller>,
+) -> jlong {
     unowned
-        .with_env(|env| -> jni::errors::Result<JByteArray<'caller>> {
-            let action = match filter(handle) {
-                Some(f) => crate::handle(f, &env.convert_byte_array(&packet)?),
-                None => Action::Ignore,
+        .with_env(|env| -> jni::errors::Result<jlong> {
+            let intercepted = parse_addresses(&intercepted.try_to_string(env)?);
+            let filter = if filter_handle == 0 {
+                FilterBuilder::default().build()
+            } else {
+                // SAFETY: see `filter`; ownership moves into the tunnel here.
+                *unsafe { Box::from_raw(filter_handle as *mut Filter) }
             };
-            env.byte_array_from_slice(&encode(action))
+            Ok(Box::into_raw(Box::new(Tunnel::new(fd, filter, intercepted))) as jlong)
         })
         .resolve::<ThrowRuntimeExAndDefault>()
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeWrapReply<'caller>(
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelSetUpstream<'caller>(
     mut unowned: EnvUnowned<'caller>,
     _class: JClass<'caller>,
-    request: JByteArray<'caller>,
-    answer: JByteArray<'caller>,
-) -> JByteArray<'caller> {
+    handle: jlong,
+    servers: JString<'caller>,
+) {
     unowned
-        .with_env(|env| -> jni::errors::Result<JByteArray<'caller>> {
-            let request = env.convert_byte_array(&request)?;
-            let answer = env.convert_byte_array(&answer)?;
-            env.byte_array_from_slice(&wrap_reply(&request, &answer).unwrap_or_default())
+        .with_env(|env| -> jni::errors::Result<()> {
+            if let Some(t) = tunnel(handle) {
+                t.set_upstream(parse_servers(&servers.try_to_string(env)?));
+            }
+            Ok(())
         })
         .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// Blocks until `nativeTunnelStop`; returns an empty string, or the error that ended the tunnel.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelRun<'caller>(
+    mut unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) -> JString<'caller> {
+    let outcome = match tunnel(handle) {
+        Some(t) => t.run().err().map(|e| e.to_string()).unwrap_or_default(),
+        None => "no tunnel".to_string(),
+    };
+    unowned
+        .with_env(|env| -> jni::errors::Result<JString<'caller>> { env.new_string(outcome) })
+        .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelStop<'caller>(
+    _unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) {
+    if let Some(t) = tunnel(handle) {
+        t.stop();
+    }
+}
+
+/// `queries,blocked,tcp,udp` followed by recently blocked names, one per line.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelStats<'caller>(
+    mut unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) -> JString<'caller> {
+    let stats = tunnel(handle).map(|t| t.stats().encode()).unwrap_or_default();
+    unowned
+        .with_env(|env| -> jni::errors::Result<JString<'caller>> { env.new_string(stats) })
+        .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelFree<'caller>(
+    _unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) {
+    if handle != 0 {
+        // SAFETY: see `tunnel`; `nativeTunnelRun` has returned before Kotlin frees it.
+        drop(unsafe { Box::from_raw(handle as *mut Tunnel) });
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dns::{build_query, TYPE_A};
-    use crate::packet::tests::{tcp_syn, udp_packet};
-    use std::net::IpAddr;
-
-    fn sample_filter() -> Filter {
-        let mut builder = FilterBuilder::default();
-        builder.add_list("||doubleclick.net^\n");
-        builder.build()
-    }
-
-    fn client() -> IpAddr {
-        "10.111.0.2".parse().unwrap()
-    }
-
-    fn resolver() -> IpAddr {
-        "10.111.0.1".parse().unwrap()
-    }
 
     #[test]
-    fn blocked_query_is_answered_locally() {
-        let query = udp_packet(client(), resolver(), 40000, 53, &build_query(9, "pubads.g.doubleclick.net", TYPE_A));
-        let Action::Blocked { packet, name } = handle(&sample_filter(), &query) else { panic!() };
-        assert_eq!(name, "pubads.g.doubleclick.net");
-        let reply = packet::parse(&packet).unwrap();
-        assert_eq!((reply.src, reply.dst, reply.src_port, reply.dst_port), (resolver(), client(), 53, 40000));
-        assert_eq!(&reply.payload[reply.payload.len() - 4..], &[0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn allowed_query_is_forwarded_and_wrapped() {
-        let dns_query = build_query(9, "example.com", TYPE_A);
-        let query = udp_packet(client(), resolver(), 40000, 53, &dns_query);
-        let Action::Forward { query: forwarded, name } = handle(&sample_filter(), &query) else { panic!() };
-        assert_eq!((forwarded.as_slice(), name.as_str()), (dns_query.as_slice(), "example.com"));
-        let wrapped = wrap_reply(&query, b"upstream answer").unwrap();
-        let reply = packet::parse(&wrapped).unwrap();
-        assert_eq!((reply.dst, reply.dst_port), (client(), 40000));
-        assert_eq!(reply.payload, b"upstream answer");
-    }
-
-    #[test]
-    fn tcp_to_resolver_is_reset_and_other_udp_ignored() {
-        let dot = tcp_syn(client(), "1.1.1.1".parse().unwrap(), 50000, 853, 7);
-        assert!(matches!(handle(&sample_filter(), &dot), Action::Reset { .. }));
-        let quic = udp_packet(client(), "1.1.1.1".parse().unwrap(), 50000, 443, b"quic");
-        assert_eq!(handle(&sample_filter(), &quic), Action::Ignore);
-        assert_eq!(handle(&sample_filter(), &[1, 2, 3]), Action::Ignore);
-    }
-
-    #[test]
-    fn encoding_layout() {
-        let encoded = encode(Action::Forward { query: vec![9, 9], name: "ab".into() });
-        assert_eq!(encoded, vec![KIND_FORWARD, 0, 2, b'a', b'b', 9, 9]);
-        assert_eq!(encode(Action::Ignore), vec![KIND_IGNORE, 0, 0]);
+    fn parses_server_lists() {
+        assert_eq!(
+            parse_servers("192.168.1.1, 2001:db8::1,[2001:db8::2]:5353,127.0.0.1:5300,garbage"),
+            vec![
+                "192.168.1.1:53".parse().unwrap(),
+                "[2001:db8::1]:53".parse().unwrap(),
+                "[2001:db8::2]:5353".parse().unwrap(),
+                "127.0.0.1:5300".parse().unwrap(),
+            ]
+        );
+        assert!(parse_servers("").is_empty());
     }
 }
