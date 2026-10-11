@@ -27,3 +27,7 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# Vendored with an idle-wake fix; see native/vendor/netstack-smoltcp/NFDNSVPN-PATCH.md.
+[patch.crates-io]
+netstack-smoltcp = { path = "../vendor/netstack-smoltcp" }

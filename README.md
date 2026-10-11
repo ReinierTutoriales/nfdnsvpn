@@ -68,6 +68,8 @@ Requisitos: JDK 21, Android SDK con NDK `28.2.13676358`, Rust (`rustup`).
 ```bash
 (cd native/nfdns-core && cargo test)   # núcleo Rust
 sudo scripts/e2e-linux.sh              # túnel con un TUN real (Linux, root, iproute2, curl, aioquic)
+sudo scripts/e2e-linux.sh --bench      # además latencia, cortes y eficiencia (varios minutos)
+scripts/validate-lists.sh              # eficacia de las listas y falsos positivos
 ./gradlew testDebugUnitTest lintDebug  # tests JVM contra la librería nativa + lint
 ./gradlew assembleDebug                # app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -83,6 +85,7 @@ cargo run --release --example measure -- lista1.txt lista2.txt
 
 | Ruta | Contenido |
 |---|---|
+| `native/vendor/netstack-smoltcp` | Pila TCP/IP (copia con un parche de consumo en reposo) |
 | `native/nfdns-core` | Núcleo Rust: clasificador, DNS (con CNAME), SNI/Host, QUIC Initial, filtro de dominios, túnel (pila TCP/IP y relay), JNI |
 | `scripts/e2e-linux.sh` | Prueba de extremo a extremo del túnel en *network namespaces* |
 | `app/src/main/java/.../vpn` | `ShieldVpnService` (TUN y rutas de cada modo), DNS de la red, ajustes, estado |

@@ -275,3 +275,51 @@ en **Opciones**, que no hace falta abrir. En la pantalla principal solo aparecen
 impiden filtrar (error, DNS privado estricto). «Bloquear conexiones sin VPN» no se puede activar
 desde una app (solo desde los ajustes de Android, ADB o una app de administración de empresa):
 Opciones lo explica y abre ese ajuste.
+
+## Validación medida (PC x86_64, Linux con TUN real)
+
+Herramientas: `sudo scripts/e2e-linux.sh --bench` (latencia, cortes, eficiencia; compara cada
+medida con la misma operación sin túnel) y `scripts/validate-lists.sh` (eficacia de las listas).
+
+### Latencia añadida
+
+| Operación | Con túnel (p50 / p99) | Sin túnel (p50 / p99) |
+|---|---|---|
+| DNS permitido (reenviado) | 0,09 / 0,81 ms | 0,06 / 0,24 ms |
+| DNS bloqueado (respuesta local) | 0,05 / 0,12 ms | — |
+| HTTP: conexión + primer byte | 0,58–0,69 / 2,0–2,3 ms | 0,55 / 6–10 ms |
+| Saludo TLS con inspección de SNI | 2,1 / 4,2 ms | 21 / 36 ms (retrasos de ACK del kernel en el camino directo) |
+| Protocolo en el que habla primero el servidor | 0,30 / 2,7 ms (antes 302 ms) | 0,78 / 3,4 ms |
+
+### Cortes de conexión
+
+| Prueba | Resultado |
+|---|---|
+| 500 conexiones abiertas a la vez | 500/500 responden |
+| TCP y UDP inactivos 130 s y reutilizados | Siguen funcionando |
+| Cambio de lista con una descarga de 200 MB en curso | 200 MB completos, sin corte |
+| 250 conexiones cortas en ráfagas | RAM estable, todas liberadas |
+
+### Eficiencia
+
+| Medida | Antes | Ahora |
+|---|---|---|
+| Despertares del túnel en reposo | ~176 por segundo (espera fija de 5 ms de netstack-smoltcp) | 0 (parche en `native/vendor/netstack-smoltcp`) |
+| CPU en reposo | 7–8 ticks / 20 s | 0 |
+| Memoria por conexión TCP | 142 KB | 76 KB (búferes de 16 KiB en la pila y 8 KiB en el relay) |
+| 500 conexiones | +71 MB | +38 MB |
+| Un flujo con el túnel limitado al 15 % de un núcleo | 204 Mbit/s (32 KiB) | 184 Mbit/s (16 KiB): 7 veces lo que pide un 4K |
+| CPU por GB transferido | ~6 s/GB en este PC | sin cambio |
+
+### Eficacia de las listas por defecto
+
+| Conjunto | Resultado |
+|---|---|
+| Test de bloqueadores de d3ward (131 dominios de anuncios, analítica, rastreadores, fabricantes) | 129 bloqueados (98,5 %); escapan `udc.yahoo.com` y `analytics.pinterest.com` |
+| 50 dominios críticos de TV (YouTube, Netflix, Prime, Disney+, Twitch, Spotify, Plex, Pluto, Play, FCM, hora, conectividad) | 0 bloqueados |
+| Top 1000 de Tranco | 101 bloqueados, casi todos publicidad y analítica. A revisar por el usuario si molestan: `kwai.com` y `stripchat.com` (HaGeZi Pro), `forter.com` (AdGuard, antifraude en pagos) — se pueden permitir en Opciones |
+
+### Lo que solo se puede medir en la onn
+
+CPU por GB y memoria reales en su procesador, latencia con la red Wi-Fi real y la fluidez del 4K.
+La pantalla de Opciones muestra RAM y CPU de la app para anotarlas.

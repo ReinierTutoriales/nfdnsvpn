@@ -9,10 +9,13 @@
 #             fake DNS :53, nothing on :853
 #
 # Needs root, iproute2, python3 (with aioquic for the QUIC checks) and curl.
-# Usage: sudo scripts/e2e-linux.sh
+# Usage: sudo scripts/e2e-linux.sh [--bench]
+# --bench adds latency, connection-cut and efficiency measurements (several minutes).
 # (or TUNNEL_BIN=<prebuilt linux_tun> sudo -E scripts/e2e-linux.sh)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+BENCH=0
+[[ "${1:-}" == "--bench" ]] && BENCH=1
 
 TV=nfe2e-tv
 GW=nfe2e-gw
@@ -68,6 +71,27 @@ def udp_echo(family, address):
     s = socket.socket(family, socket.SOCK_DGRAM); s.bind((address, 9999))
     while True:
         data, peer = s.recvfrom(2048); s.sendto(data, peer)
+def tcp_echo():
+    s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("192.0.2.1", 7000)); s.listen(1024)
+    def serve(c):
+        with c:
+            while True:
+                data = c.recv(4096)
+                if not data: return
+                c.sendall(data)
+    while True:
+        c, _ = s.accept(); threading.Thread(target=serve, args=(c,), daemon=True).start()
+def banner():
+    # Server speaks first (SMTP/FTP/SSH style), then echoes.
+    s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("192.0.2.1", 2222)); s.listen(256)
+    def serve(c):
+        with c:
+            c.sendall(b"SSH-2.0-e2e\r\n")
+            while c.recv(4096): pass
+    while True:
+        c, _ = s.accept(); threading.Thread(target=serve, args=(c,), daemon=True).start()
 def encode(name):
     return b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00"
 def fake_dns():
@@ -113,6 +137,8 @@ def http_v6():
     HTTPServerV6(("2001:db8:1::1", 8080), handler).serve_forever()
 threading.Thread(target=udp_echo, args=(socket.AF_INET, "192.0.2.1"), daemon=True).start()
 threading.Thread(target=https, args=(8443,), daemon=True).start()
+threading.Thread(target=tcp_echo, daemon=True).start()
+threading.Thread(target=banner, daemon=True).start()
 threading.Thread(target=https, args=(9443,), daemon=True).start()
 if socket.has_ipv6 and os.path.isdir("/proc/sys/net/ipv6"):
     threading.Thread(target=udp_echo, args=(socket.AF_INET6, "2001:db8:1::1"), daemon=True).start()
@@ -180,6 +206,58 @@ elif cmd == "quic":
         asyncio.run(asyncio.wait_for(main(), 4))
     except Exception as e:
         print("quic-failed", type(e).__name__)
+elif cmd in ("dnsbench", "tcpbench", "tlsbench", "banner"):
+    import ssl
+    def pct(values):
+        values = sorted(values)
+        pick = lambda q: values[min(len(values) - 1, int(q * len(values)))]
+        return "p50 %.2f ms  p95 %.2f ms  p99 %.2f ms" % (pick(0.5) * 1e3, pick(0.95) * 1e3, pick(0.99) * 1e3)
+    n = int(sys.argv[2]); samples = []
+    for i in range(n):
+        start = time.perf_counter()
+        if cmd == "dnsbench":
+            query(sys.argv[3], "bench%d.example.org" % i if sys.argv[4] == "allowed" else "x%d.doubleclick.net" % i)
+        elif cmd == "tcpbench":
+            c = socket.create_connection(("192.0.2.1", 8080), timeout=5)
+            c.sendall(b"GET /small HTTP/1.0\r\nHost: allowed.example\r\n\r\n"); c.recv(1); c.close()
+        elif cmd == "tlsbench":
+            ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+            raw = socket.create_connection(("192.0.2.1", 8443), timeout=5)
+            t = ctx.wrap_socket(raw, server_hostname="allowed.example"); t.close()
+        else:
+            c = socket.create_connection(("192.0.2.1", 2222), timeout=5); c.recv(1); c.close()
+        samples.append(time.perf_counter() - start)
+    print(pct(samples))
+elif cmd == "hold":
+    # Opens n connections to the echo server, checks each echoes, keeps them open for a while.
+    n, keep = int(sys.argv[2]), float(sys.argv[3]); conns = []; ok = 0
+    for i in range(n):
+        try:
+            c = socket.create_connection(("192.0.2.1", 7000), timeout=5); conns.append(c)
+        except OSError:
+            pass
+    for c in conns:
+        try:
+            c.sendall(b"x"); ok += c.recv(1) == b"x"
+        except OSError:
+            pass
+    print(ok, flush=True); time.sleep(keep)
+    for c in conns: c.close()
+elif cmd == "idle":
+    # One TCP connection and one UDP flow, used, left idle, then used again.
+    idle = float(sys.argv[2])
+    t = socket.create_connection(("192.0.2.1", 7000), timeout=5); u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.settimeout(3)
+    t.sendall(b"a"); t.recv(1); u.sendto(b"a", ("192.0.2.1", 9999)); u.recvfrom(16)
+    time.sleep(idle)
+    try:
+        t.sendall(b"b"); tcp = "tcp-ok" if t.recv(1) == b"b" else "tcp-bad"
+    except OSError as e:
+        tcp = "tcp-cut(%s)" % type(e).__name__
+    try:
+        u.sendto(b"b", ("192.0.2.1", 9999)); udp = "udp-ok" if u.recvfrom(16)[0] == b"b" else "udp-bad"
+    except OSError as e:
+        udp = "udp-cut(%s)" % type(e).__name__
+    print(tcp, udp)
 elif cmd == "refused":
     start = time.monotonic()
     try:
@@ -263,11 +341,48 @@ check "Velocidad mayor que 25 Mbit/s (4K)" "1" "$(python3 -c "print(int($mbits >
 # Closed connections leave the stack after smoltcp's TIME-WAIT (about 10 s).
 for _ in $(seq 1 30); do
     sleep 1
-    active=$(tail -n 1 "$WORK/tunnel.log" | cut -d, -f3)
+    active=$(grep '^stats' "$WORK/tunnel.log" | tail -n 1 | cut -d, -f3)
     [[ "$active" == 0 ]] && break
 done
-echo "INFO $(tail -n 1 "$WORK/tunnel.log") (consultas,bloqueadas,tcp,udp,quic rechazados)"
+echo "INFO $(grep '^stats' "$WORK/tunnel.log" | tail -n 1) (consultas,bloqueadas,tcp,udp,quic rechazados)"
 check "Conexiones TCP liberadas tras cerrarse" "0" "$active"
+if (( BENCH )); then
+    echo "BENCH --- latencia (con túnel / directo, sin túnel) ---"
+    echo "BENCH DNS permitido (reenviado)  túnel:   $(app "$PY" "$WORK/client.py" dnsbench 500 10.111.0.1 allowed)"
+    echo "BENCH DNS permitido              directo: $(gw "$PY" "$WORK/client.py" dnsbench 500 192.0.2.1 allowed)"
+    echo "BENCH DNS bloqueado (local)      túnel:   $(app "$PY" "$WORK/client.py" dnsbench 500 10.111.0.1 blocked)"
+    echo "BENCH HTTP conexión + 1er byte   túnel:   $(app "$PY" "$WORK/client.py" tcpbench 200)"
+    echo "BENCH HTTP conexión + 1er byte   directo: $(gw "$PY" "$WORK/client.py" tcpbench 200)"
+    echo "BENCH TLS handshake (SNI)        túnel:   $(app "$PY" "$WORK/client.py" tlsbench 200)"
+    echo "BENCH TLS handshake (SNI)        directo: $(gw "$PY" "$WORK/client.py" tlsbench 200)"
+    echo "BENCH Banner (habla el servidor) túnel:   $(app "$PY" "$WORK/client.py" banner 20)"
+    echo "BENCH Banner (habla el servidor) directo: $(gw "$PY" "$WORK/client.py" banner 20)"
+
+    echo "BENCH --- cortes de conexión ---"
+    rss0=$(awk '/VmRSS/ {print $2}' /proc/$TUNNEL_PID/status)
+    app "$PY" "$WORK/client.py" hold 500 6 > "$WORK/hold.txt" & HOLD=$!
+    for _ in $(seq 1 40); do [[ -s "$WORK/hold.txt" ]] && break; sleep 0.25; done
+    sleep 1
+    rss1=$(awk '/VmRSS/ {print $2}' /proc/$TUNNEL_PID/status)
+    echo "BENCH 500 conexiones abiertas a la vez: $(cat "$WORK/hold.txt") responden; RSS +$(( rss1 - rss0 )) KB ($(( (rss1 - rss0) / 500 )) KB por conexión)"
+    wait $HOLD
+    echo "BENCH Inactividad de 130 s (TCP y UDP): $(app "$PY" "$WORK/client.py" idle 130)"
+    printf '||doubleclick.net^\n192.0.2.9\n||reload.example^\n' > "$WORK/list.next"
+    ( sleep 2; mv "$WORK/list.next" "$WORK/list.txt" ) &
+    size=$(app curl -s -o /dev/null --max-time 60 --limit-rate 25M -w '%{size_download}' http://192.0.2.1:8080/big)
+    echo "BENCH Descarga de 200 MB a 25 MB/s con cambio de lista a mitad: ${size} bytes recibidos; $(grep -c '^reloaded' "$WORK/tunnel.log") recarga(s)"
+
+    echo "BENCH --- eficiencia ---"
+    idle_before=$(awk '{print $14 + $15}' /proc/$TUNNEL_PID/stat)
+    sleep 20
+    idle_after=$(awk '{print $14 + $15}' /proc/$TUNNEL_PID/stat)
+    echo "BENCH CPU en reposo: $(( idle_after - idle_before )) ticks en 20 s ($(getconf CLK_TCK) ticks = 1 s)"
+    for task in /proc/$TUNNEL_PID/task/*; do echo "$(cat $task/comm) $(awk '/^voluntary_ctxt_switches/ {print $2}' $task/status)"; done > "$WORK/wake0"
+    sleep 10
+    for task in /proc/$TUNNEL_PID/task/*; do echo "$(cat $task/comm) $(awk '/^voluntary_ctxt_switches/ {print $2}' $task/status)"; done > "$WORK/wake1"
+    echo "BENCH Despertares en reposo por hilo (10 s): $(paste -d' ' "$WORK/wake0" "$WORK/wake1" | awk '{printf "%s=%d ", $1, $4-$2}')"
+fi
+
 kill -0 "$TUNNEL_PID" && echo "PASS túnel sigue vivo" || { echo "FAIL túnel caído"; cat "$WORK/tunnel.log"; FAILURES=$((FAILURES + 1)); }
 echo "Fallos: $FAILURES"
 exit "$FAILURES"

@@ -1,6 +1,7 @@
 //! Runs the tunnel on a Linux TUN device, for the end-to-end test in scripts/e2e-linux.sh.
 //! Usage: linux_tun <tun name> <upstream ip[:port]> <list file> <intercepted ip,...>
-//! Prints the stats line (`queries,blocked,tcp,udp,quic_refused`) every second.
+//! Prints the stats line (`queries,blocked,tcp,udp,quic_refused`) every second, and reloads the
+//! list (as the app's daily update does) when the file changes, printing `reloaded <rules>`.
 use nfdns::filter::FilterBuilder;
 use nfdns::parse_servers;
 use nfdns::tunnel::Tunnel;
@@ -33,15 +34,29 @@ fn main() {
     let [_, tun, upstream, list, intercepted] = args.as_slice() else {
         panic!("usage: linux_tun <tun name> <upstream> <list file> <intercepted ips>");
     };
-    let mut builder = FilterBuilder::default();
-    builder.add_list(&std::fs::read_to_string(list).expect("list file"));
+    let load = |path: &str| {
+        let mut builder = FilterBuilder::default();
+        builder.add_list(&std::fs::read_to_string(path).expect("list file"));
+        builder.build()
+    };
     let intercepted = intercepted.split(',').filter_map(|s| s.parse().ok()).collect();
-    let tunnel = Arc::new(Tunnel::new(open_tun(tun), builder.build(), intercepted));
+    let tunnel = Arc::new(Tunnel::new(open_tun(tun), load(list), intercepted));
     tunnel.set_upstream(parse_servers(upstream));
     let reporter = tunnel.clone();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(1));
-        println!("stats {}", reporter.stats().encode().lines().next().unwrap_or_default());
+    let list = list.clone();
+    std::thread::spawn(move || {
+        let modified = |path: &str| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        let mut seen = modified(&list);
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            println!("stats {}", reporter.stats().encode().lines().next().unwrap_or_default());
+            let now = modified(&list);
+            if now != seen {
+                seen = now;
+                reporter.set_filter(load(&list));
+                println!("reloaded {}", reporter.rule_count());
+            }
+        }
     });
     tunnel.run().expect("tunnel");
 }

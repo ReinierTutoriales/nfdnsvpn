@@ -24,7 +24,7 @@ use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{mpsc, oneshot, Notify};
 use tokio::time::{timeout, timeout_at, Instant};
 
 const MAX_PACKET: usize = 65535;
@@ -34,11 +34,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Long enough for QUIC and game sessions between keepalives.
 const UDP_IDLE: Duration = Duration::from_secs(120);
 /// Per-direction buffers, allocated up front for every connection: netstack-smoltcp keeps two of
-/// this size in smoltcp and two more of its own, and the relay two of [`RELAY_BUFFER`], so about
-/// 160 KiB per TCP connection. The app side of the stack is local (sub-millisecond RTT), so a
-/// 32 KiB window still allows hundreds of Mbit/s (measured by scripts/e2e-linux.sh).
-const STACK_TCP_BUFFER: u32 = 32 * 1024;
-const RELAY_BUFFER: usize = 16 * 1024;
+/// this size in smoltcp and two more of its own, and the relay two of [`RELAY_BUFFER`]: about
+/// 76 KiB per TCP connection (142 KiB with 32 KiB buffers). Measured with scripts/e2e-linux.sh,
+/// a single flow still reaches 184 Mbit/s with the tunnel limited to 15 % of a core (204 Mbit/s
+/// with 32 KiB): the CPU is the limit, not the window, and 4K video needs about 25 Mbit/s.
+const STACK_TCP_BUFFER: u32 = 16 * 1024;
+const RELAY_BUFFER: usize = 8 * 1024;
 const RECENT_LIMIT: usize = 30;
 /// Receive buffer of each UDP flow. Real datagrams stay within the path MTU (~1500 bytes), so
 /// 16 KiB is ample, and 50 QUIC flows cost 0.8 MB instead of 3.2 MB with 64 KiB buffers.
@@ -370,43 +371,52 @@ async fn forward_dns(
 }
 
 async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: SharedFilter, stats: Arc<Stats>) {
-    while let Some((mut inbound, _local, remote)) = listener.next().await {
+    while let Some((inbound, _local, remote)) = listener.next().await {
         let (filter, stats) = (filter.current(), stats.clone());
         tokio::spawn(async move {
             let _active = Active::new(&stats.tcp_active);
-            // Connect while the app sends its first bytes, so inspection adds no round trip.
-            let connect = tokio::spawn(timeout(CONNECT_TIMEOUT, TcpStream::connect(remote)));
+            let (mut app_read, app_write) = tokio::io::split(inbound);
+            // The real connection opens while the app's first bytes are inspected, and whatever
+            // the server sends goes to the app at once: protocols where the server speaks first
+            // (banners) get no delay. Only the app's bytes wait for the verdict, which is all a
+            // block needs (a TLS or HTTP server sends nothing before the client does).
+            let (server_tx, server_rx) = oneshot::channel();
+            let mut download = tokio::spawn(async move {
+                let Ok(Ok(outbound)) = timeout(CONNECT_TIMEOUT, TcpStream::connect(remote)).await else { return };
+                let _ = outbound.set_nodelay(true);
+                let (server_read, server_write) = outbound.into_split();
+                if server_tx.send(server_write).is_ok() {
+                    pipe(server_read, app_write).await;
+                }
+            });
             let peek_timeout = if WEB_PORTS.contains(&remote.port()) { PEEK_TIMEOUT } else { OTHER_PORT_PEEK_TIMEOUT };
-            let first = {
-                match first_flight(&mut inbound, peek_timeout).await {
-                    Some((_, Some(name))) if filter.is_blocked(&name) => {
-                        // Closing `inbound` makes the app see the connection fail at once.
-                        connect.abort();
-                        stats.blocked.fetch_add(1, Ordering::Relaxed);
-                        stats.remember(name);
-                        return;
-                    }
-                    Some((first, _)) => first,
-                    None => {
-                        connect.abort();
-                        return;
-                    }
+            let first = match first_flight(&mut app_read, peek_timeout).await {
+                Some((_, Some(name))) if filter.is_blocked(&name) => {
+                    // Dropping both halves closes the app's connection at once.
+                    download.abort();
+                    stats.blocked.fetch_add(1, Ordering::Relaxed);
+                    stats.remember(name);
+                    return;
+                }
+                Some((first, _)) => first,
+                None => {
+                    download.abort();
+                    return;
                 }
             };
-            // The app already completed its handshake with the stack; if the real server is
-            // unreachable, dropping `inbound` resets the connection.
-            let Ok(Ok(Ok(mut outbound))) = connect.await else { return };
-            let _ = outbound.set_nodelay(true);
-            if !first.is_empty() && outbound.write_all(&first).await.is_err() {
+            // An unreachable server drops the sender: closing `inbound` then resets the app.
+            let Ok(mut server_write) = server_rx.await else { return };
+            if !first.is_empty() && server_write.write_all(&first).await.is_err() {
+                download.abort();
                 return;
             }
-            let (app_read, app_write) = tokio::io::split(inbound);
-            let (server_read, server_write) = outbound.into_split();
             let upload = pipe(app_read, server_write);
-            let download = pipe(server_read, app_write);
-            tokio::pin!(upload, download);
+            tokio::pin!(upload);
             tokio::select! {
-                _ = &mut upload => { let _ = timeout(HALF_CLOSE_TIMEOUT, download).await; }
+                _ = &mut upload => {
+                    let _ = timeout(HALF_CLOSE_TIMEOUT, &mut download).await;
+                    download.abort();
+                }
                 _ = &mut download => { let _ = timeout(HALF_CLOSE_TIMEOUT, upload).await; }
             }
         });
@@ -415,7 +425,7 @@ async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: SharedFi
 
 /// Reads what the app sends first until its server name is known (or cannot be), at most
 /// [`sni::MAX_PEEK`] bytes or `wait`. `None` if the app closed before sending anything.
-async fn first_flight(inbound: &mut netstack_smoltcp::TcpStream, wait: Duration) -> Option<(Vec<u8>, Option<String>)> {
+async fn first_flight<R: AsyncRead + Unpin>(inbound: &mut R, wait: Duration) -> Option<(Vec<u8>, Option<String>)> {
     let mut first = Vec::new();
     let mut chunk = vec![0u8; RELAY_BUFFER];
     let deadline = Instant::now() + wait;

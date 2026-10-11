@@ -1,0 +1,55 @@
+# Domains a TV needs to work: blocking any of them breaks an app or the system.
+# Used by scripts/validate-lists.sh to catch false positives in the default lists.
+# Video and content
+www.youtube.com
+youtubei.googleapis.com
+i.ytimg.com
+yt3.ggpht.com
+rr3---sn-4g5e6nsz.googlevideo.com
+www.netflix.com
+ipv4-c001-mad001-ix.1.oca.nflxvideo.net
+occ-0-1234-999.1.nflxso.net
+www.primevideo.com
+atv-ps.amazon.com
+m.media-amazon.com
+www.disneyplus.com
+disney.api.edge.bamgrid.com
+www.twitch.tv
+gql.twitch.tv
+video-weaver.fra02.hls.ttvnw.net
+open.spotify.com
+api.spotify.com
+i.scdn.co
+plex.tv
+app.plex.tv
+pluto.tv
+service-stitcher.clusters.pluto.tv
+tubitv.com
+# Android and Google TV system services
+android.googleapis.com
+play.googleapis.com
+play-fe.googleapis.com
+android.clients.google.com
+clients3.google.com
+connectivitycheck.gstatic.com
+www.gstatic.com
+fonts.gstatic.com
+accounts.google.com
+oauth2.googleapis.com
+www.googleapis.com
+mtalk.google.com
+fcm.googleapis.com
+firebaseinstallations.googleapis.com
+time.android.com
+# General web and the app's own list sources
+www.google.com
+www.bing.com
+www.wikipedia.org
+github.com
+raw.githubusercontent.com
+adguardteam.github.io
+ublockorigin.github.io
+small.oisd.nl
+cdn.jsdelivr.net
+cdnjs.cloudflare.com
+www.cloudflare.com
