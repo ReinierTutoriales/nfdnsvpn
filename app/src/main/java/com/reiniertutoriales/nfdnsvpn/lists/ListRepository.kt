@@ -92,6 +92,17 @@ class ListRepository(private val context: Context) {
         const val BUNDLED_ASSET = "video-ads.txt"
         private const val MAX_AGE_MS = 24 * 60 * 60 * 1000L
         private const val MAX_TEXT_CHARS = 16L * 1024 * 1024
+
+        /**
+         * Why a downloaded list must not replace the one in use, or null if it may. Lists grow or
+         * shrink a little each day; one with less than half the rules of the last good copy is a
+         * cut download or a wrong page, and swapping it in would quietly unblock most of the list.
+         */
+        fun rejection(rules: Int, minRules: Int, previousRules: Int): String? = when {
+            rules < minRules -> "El servidor no devolvió una lista válida"
+            previousRules > 0 && rules < previousRules / 2 -> "Lista incompleta ($rules reglas; la anterior tenía $previousRules)"
+            else -> null
+        }
     }
 
     private val dir = File(context.filesDir, "lists").apply { mkdirs() }
@@ -161,6 +172,8 @@ class ListRepository(private val context: Context) {
                 return
             }
             if (code !in 200..299) throw IOException("HTTP $code")
+            // Only HTTPS, also after redirects: rules must not be swappable on the way.
+            if (connection.url.protocol != "https") throw IOException("Redirigido fuera de HTTPS")
             // Line by line to disk, validating on the way: memory use is one line, not one list.
             var characters = 0L
             var rules = 0
@@ -176,10 +189,12 @@ class ListRepository(private val context: Context) {
                     }
                 }
             }
-            if (rules < list.minRules) throw IOException("El servidor no devolvió una lista válida")
+            val previousRules = if (target.exists()) prefs.getInt("$key.rules", 0) else 0
+            rejection(rules, list.minRules, previousRules)?.let { throw IOException(it) }
             if (!partial.renameTo(target)) throw IOException("No se pudo guardar la lista")
             prefs.edit {
                 putLong("$key.fetchedAt", System.currentTimeMillis())
+                putInt("$key.rules", rules)
                 putString("$key.etag", connection.getHeaderField("ETag"))
                 putString("$key.lastModified", connection.getHeaderField("Last-Modified"))
             }

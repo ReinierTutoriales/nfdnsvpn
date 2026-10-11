@@ -7,6 +7,11 @@
 //! so it runs on a thread of its own, and only while some app has a rule: with none, a new flow
 //! costs two read locks and nothing else.
 //!
+//! When the owner cannot be found (lookup slow or saturated, socket already gone) the flow is
+//! dropped, so a blocked app cannot slip through by flooding the lookup with connections. The one
+//! exception: a device whose lookup has never answered (broken or unsupported), where dropping
+//! would cut every app off; there flows pass.
+//!
 //! A watched app may connect only to a readable, allowed server name (TLS SNI, HTTP `Host`, QUIC
 //! Initial) or to an address that the tunnel's own DNS gave out. Hardcoded IPs, its own resolver
 //! and nameless protocols are cut. What it reaches is kept per app ([`AppGate::activity`]), so its
@@ -14,15 +19,17 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-/// A lookup slower than this lets the flow through: an owner that cannot be found (a socket
-/// already closed, an unsupported device) must not cut every app off.
+/// A lookup takes well under a millisecond; one slower than this means the queue is flooded.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(1);
+/// Lookups waiting at most; more new flows than this at once are refused, not queued.
+const LOOKUP_QUEUE: usize = 256;
 /// Resolved addresses kept for watched apps: ~70 bytes each, about 1 MB at most.
 const RESOLVED_LIMIT: usize = 16 * 1024;
 /// An address stays valid at least this long, whatever its TTL: apps keep answers a while.
@@ -45,6 +52,9 @@ pub enum AppRule {
     Blocked,
     /// Watched app (its uid): only names it can show, or addresses from our DNS.
     Watched(u32),
+    /// Rules are active but the owner could not be found: treated as blocked, except for DNS,
+    /// which the system resolver sends on behalf of every app and is filtered anyway.
+    Unknown,
 }
 
 /// Finds the Linux uid of the app that owns a connection; `None` if unknown.
@@ -61,7 +71,9 @@ type Activity = VecDeque<(Arc<str>, bool)>;
 pub struct AppGate {
     blocked: RwLock<Arc<HashSet<u32>>>,
     watched: RwLock<Arc<HashSet<u32>>>,
-    lookups: Mutex<Option<mpsc::Sender<Request>>>,
+    lookups: Mutex<Option<mpsc::SyncSender<Request>>>,
+    /// The lookup has found an owner at least once, so an unknown owner is not a broken device.
+    proven: Arc<AtomicBool>,
     /// Address -> (valid until, name asked for). Filled only while some app is watched.
     resolved: Mutex<HashMap<IpAddr, (Instant, Arc<str>)>>,
     activity: Mutex<HashMap<u32, Activity>>,
@@ -89,10 +101,19 @@ impl AppGate {
 
     /// Starts the thread that answers lookups; it ends when the gate is dropped.
     pub fn set_lookup(&self, mut lookup: impl OwnerLookup) -> std::io::Result<()> {
-        let (sender, requests) = mpsc::channel::<Request>();
+        let (sender, requests) = mpsc::sync_channel::<Request>(LOOKUP_QUEUE);
+        let proven = self.proven.clone();
         thread::Builder::new().name("nfdns-owner".into()).spawn(move || {
             for (protocol, local, remote, reply) in requests {
-                let _ = reply.send(lookup.owner(protocol, local, remote));
+                // A flow whose caller already gave up needs no binder call.
+                if reply.is_closed() {
+                    continue;
+                }
+                let owner = lookup.owner(protocol, local, remote);
+                if owner.is_some() {
+                    proven.store(true, Ordering::Relaxed);
+                }
+                let _ = reply.send(owner);
             }
         })?;
         *self.lookups.lock().unwrap() = Some(sender);
@@ -112,13 +133,18 @@ impl AppGate {
         }
         let Some(lookups) = self.lookups.lock().unwrap().clone() else { return AppRule::Normal };
         let (reply, answer) = oneshot::channel();
-        if lookups.send((protocol, local, remote, reply)).is_err() {
-            return AppRule::Normal;
-        }
-        match timeout(LOOKUP_TIMEOUT, answer).await {
-            Ok(Ok(Some(uid))) if blocked.contains(&uid) => AppRule::Blocked,
-            Ok(Ok(Some(uid))) if watched.contains(&uid) => AppRule::Watched(uid),
-            _ => AppRule::Normal,
+        let owner = match lookups.try_send((protocol, local, remote, reply)) {
+            Ok(()) => timeout(LOOKUP_TIMEOUT, answer).await.ok().and_then(Result::ok).flatten(),
+            // Full: more new flows at once than lookups can keep up with.
+            Err(_) => None,
+        };
+        match owner {
+            Some(uid) if blocked.contains(&uid) => AppRule::Blocked,
+            Some(uid) if watched.contains(&uid) => AppRule::Watched(uid),
+            Some(_) => AppRule::Normal,
+            None if self.proven.load(Ordering::Relaxed) => AppRule::Unknown,
+            // Never answered: a broken lookup must not cut every app off.
+            None => AppRule::Normal,
         }
     }
 
@@ -195,10 +221,47 @@ mod tests {
         assert_eq!(flow(&gate, 10123), AppRule::Blocked, "blocked wins over watched");
         assert_eq!(flow(&gate, 10124), AppRule::Normal);
         assert_eq!(flow(&gate, 10125), AppRule::Watched(10125));
-        assert_eq!(flow(&gate, 1), AppRule::Normal, "unknown owner: let through");
+        assert_eq!(flow(&gate, 1), AppRule::Unknown, "unknown owner on a working lookup");
         gate.set_blocked([]);
         gate.set_watched([]);
         assert_eq!(flow(&gate, 10123), AppRule::Normal);
+    }
+
+    struct Never;
+
+    impl OwnerLookup for Never {
+        fn owner(&mut self, _: Protocol, _: SocketAddr, _: SocketAddr) -> Option<u32> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_lookup_that_never_answers_lets_flows_through() {
+        let gate = AppGate::default();
+        gate.set_blocked([10123]);
+        gate.set_lookup(Never).unwrap();
+        assert_eq!(flow(&gate, 10123), AppRule::Normal);
+    }
+
+    struct Slow;
+
+    impl OwnerLookup for Slow {
+        fn owner(&mut self, _: Protocol, local: SocketAddr, _: SocketAddr) -> Option<u32> {
+            if local.port() == 2 {
+                thread::sleep(LOOKUP_TIMEOUT * 2);
+            }
+            Some(u32::from(local.port()))
+        }
+    }
+
+    #[test]
+    fn a_flooded_lookup_drops_instead_of_letting_through() {
+        let gate = AppGate::default();
+        gate.set_blocked([10123]);
+        gate.set_lookup(Slow).unwrap();
+        assert_eq!(flow(&gate, 10124), AppRule::Normal);
+        // Port 2 stalls the lookup thread past the timeout: the blocked app's flow is not let go.
+        assert_eq!(flow(&gate, 2), AppRule::Unknown);
     }
 
     #[test]

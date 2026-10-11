@@ -25,12 +25,18 @@ use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, Semaphore, mpsc, oneshot};
 use tokio::time::{Instant, timeout, timeout_at};
 
 const MAX_PACKET: usize = 65535;
 const MTU: usize = 1500;
 const UPSTREAM_TIMEOUT: Duration = Duration::from_millis(2500);
+/// Queries forwarded at once. A TV has a few dozen in flight at most; beyond this a flood is
+/// dropped (clients retry) instead of piling up tasks and buffers.
+const DNS_IN_FLIGHT: usize = 128;
+/// Largest UDP answer read back: the biggest EDNS size clients ask for (resolvers keep to 1232
+/// since DNS Flag Day 2020). 128 queries in flight hold 512 KiB at most.
+const DNS_ANSWER_MAX: usize = 4096;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Long enough for QUIC and game sessions between keepalives.
 const UDP_IDLE: Duration = Duration::from_secs(120);
@@ -153,6 +159,7 @@ pub struct Tunnel {
     upstream: Arc<Mutex<Vec<SocketAddr>>>,
     stats: Arc<Stats>,
     apps: Arc<AppGate>,
+    dns_slots: Arc<Semaphore>,
     stop: Notify,
 }
 
@@ -167,6 +174,7 @@ impl Tunnel {
             upstream: Arc::new(Mutex::new(Vec::new())),
             stats: Arc::new(Stats::default()),
             apps: Arc::new(AppGate::default()),
+            dns_slots: Arc::new(Semaphore::new(DNS_IN_FLIGHT)),
             stop: Notify::new(),
         }
     }
@@ -287,12 +295,14 @@ impl Tunnel {
                 }
                 Verdict::Forward { query, name } => {
                     self.stats.queries.fetch_add(1, Ordering::Relaxed);
+                    let Ok(slot) = self.dns_slots.clone().try_acquire_owned() else { continue };
                     let servers = self.upstream.lock().unwrap().clone();
                     let (apps, stats) = (self.apps.clone(), self.stats.clone());
                     let forward =
                         forward_dns(data.to_vec(), query, servers, to_tun.clone(), self.filter.current(), stats.clone(), apps.clone());
                     let flow = crate::packet::parse(data).map(|p| (SocketAddr::new(p.src, p.src_port), SocketAddr::new(p.dst, p.dst_port)));
                     tokio::spawn(async move {
+                        let _slot = slot;
                         // Apps that ask their own resolver: a blocked one gets no answer, and a
                         // watched one's names are noted (the system resolver's are not theirs).
                         if let Some((local, remote)) = flow {
@@ -302,6 +312,8 @@ impl Tunnel {
                                     return;
                                 }
                                 AppRule::Watched(uid) if !name.is_empty() => apps.record(uid, &name, false),
+                                // Unknown is not refused here: the system resolver asks for every
+                                // app, and the answer goes through the filter anyway.
                                 _ => {}
                             }
                         }
@@ -384,7 +396,7 @@ async fn forward_dns(
     apps: Arc<AppGate>,
 ) {
     let servers = if servers.is_empty() { FALLBACK_UPSTREAM.to_vec() } else { servers };
-    let mut answer = vec![0u8; MAX_PACKET];
+    let mut answer = vec![0u8; DNS_ANSWER_MAX];
     for server in servers.iter().take(2) {
         let Ok(socket) = UdpSocket::bind(unspecified_for(server)).await else { continue };
         if socket.connect(server).await.is_err() || socket.send(&query).await.is_err() {
@@ -426,8 +438,9 @@ async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: SharedFi
         tokio::spawn(async move {
             let _active = Active::new(&stats.tcp_active);
             let rule = apps.rule(Protocol::Tcp, local, remote).await;
-            // Before connecting: a blocked app's server never even sees a SYN.
-            if rule == AppRule::Blocked {
+            // Before connecting: a blocked app's server never even sees a SYN. An owner that could
+            // not be found counts as blocked (see `apps`).
+            if matches!(rule, AppRule::Blocked | AppRule::Unknown) {
                 stats.blocked.fetch_add(1, Ordering::Relaxed);
                 return;
             }
@@ -665,7 +678,7 @@ async fn udp_flow(local: SocketAddr, remote: SocketAddr, mut from_app: mpsc::Rec
     let Some(first) = from_app.recv().await else { return };
     let apps = &context.apps;
     let rule = apps.rule(Protocol::Udp, local, remote).await;
-    if rule == AppRule::Blocked {
+    if matches!(rule, AppRule::Blocked | AppRule::Unknown) {
         stats.blocked.fetch_add(1, Ordering::Relaxed);
         swallow(&mut from_app).await;
         return;
@@ -935,6 +948,22 @@ mod tests {
         let echoed = receive(&app);
         assert_eq!(packet::parse(&echoed).unwrap().payload, b"resolved");
         assert_eq!(tunnel.app_activity(10125), "0\techo.example\n1\t127.0.0.1\n");
+        tunnel.stop();
+    }
+
+    #[test]
+    fn a_query_flood_holds_a_bounded_number_of_forwards() {
+        let (app, tun) = fake_tun();
+        let tunnel = start(&tun);
+        // An upstream that never answers keeps every forward in flight until its timeout.
+        let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        tunnel.set_upstream(vec![silent.local_addr().unwrap()]);
+        for id in 0..(DNS_IN_FLIGHT as u16 + 50) {
+            send(&app, &udp_packet(ip("10.111.0.2"), ip("10.111.0.1"), 30000 + id, 53, &build_query(id, "example.org", TYPE_A)));
+        }
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(tunnel.dns_slots.available_permits(), 0, "every slot taken, none beyond");
+        assert_eq!(tunnel.stats().queries.load(Ordering::Relaxed), DNS_IN_FLIGHT as u64 + 50);
         tunnel.stop();
     }
 

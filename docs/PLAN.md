@@ -248,6 +248,28 @@ Es la prueba en el dispositivo, sin código nuevo previsto salvo ajustes que sal
 | Contadores de la pantalla | Consultados cada segundo aunque nadie mire | Solo mientras la pantalla está visible: sin despertar la CPU en segundo plano |
 | Búfer por flujo UDP | 64 KiB (50 flujos QUIC: 3,2 MB) | 16 KiB (0,8 MB); los datagramas reales no pasan del MTU |
 
+### Correcciones tras la auditoría externa
+
+| Hallazgo | Antes | Ahora |
+|---|---|---|
+| Consultas DNS reenviadas sin límite | 64 KiB por consulta, sin tope: una avalancha creaba tareas y memoria sin fin | 4 KiB por consulta (el EDNS máximo que piden los clientes) y 128 a la vez como mucho (512 KiB); el resto se descarta y el cliente reintenta. Test con 178 consultas a un servidor mudo |
+| Dueño desconocido de una conexión (apps bloqueadas o vigiladas) | Se dejaba pasar tras 1 s: saturando la consulta, una app bloqueada podía colarse | Se descarta; cola acotada a 256. Solo pasa si la consulta nunca ha funcionado en el dispositivo. Tests de consulta saturada y de consulta rota |
+| Lista descargada incompleta | Bastaba con superar un mínimo fijo de reglas | Además no puede tener menos de la mitad de reglas que la última copia buena; si no, se conserva la anterior y Opciones muestra el error |
+| Descarga redirigida a HTTP | Se aceptaba | Se rechaza: listas solo por HTTPS, también tras redirecciones |
+
+Hallazgos que se dejan como están, con motivo:
+- *Copias de paquetes (`to_vec`) en el camino caliente*: la pila TCP/IP necesita el paquete en
+  propiedad. Medido: +0,03 ms por consulta DNS y más de 1 Gbit/s en PC; se revisará con la
+  medición en la onn (fase 6) antes de complicar el código.
+- *Búsqueda binaria frente a hash o árbol*: para 340 000 dominios cuesta microsegundos y usa
+  unos 22 B por dominio; un hash o un árbol gastarían varias veces más RAM.
+- *Solo QUIC v1*: QUIC v2 y otras versiones se descartan, así que la app vuelve a TCP, donde el
+  nombre se lee. Sin hueco.
+- *Listas sin firma*: los autores no publican sumas ni firmas; HTTPS con los certificados del
+  sistema, solo por HTTPS y la guarda contra listas cortadas es lo que se puede verificar.
+- *APK "reproducible"*: no lo es en sentido estricto (no se ha verificado una compilación
+  bit a bit idéntica); está firmado siempre con la misma clave, que es lo que permite actualizar.
+
 ## Blindaje anti-bypass del DNS
 
 Objetivo: fuera de los anuncios que sirve la propia app, ninguna app debe poder resolver un
@@ -314,8 +336,12 @@ de funcionar: en **Opciones › Apps sin internet** se marca la app.
 - Sin coste cuando no hay ninguna app marcada: el túnel no pregunta nada. Con alguna marcada,
   cuesta una llamada al sistema por conexión nueva, en un hilo aparte; las conexiones ya
   abiertas no se tocan.
-- Si Android no sabe el dueño (conexión ya cerrada, error del sistema), se deja pasar: con un
-  fallo así no debe quedarse sin red toda la TV.
+- Si no se sabe el dueño (consulta lenta o saturada, conexión ya cerrada), la conexión se
+  **descarta**: así una app bloqueada no puede colarse saturando la consulta con conexiones. La
+  cola admite 256 consultas; más conexiones nuevas a la vez se rechazan, no se encolan. Solo
+  pasa si la consulta nunca ha funcionado en ese dispositivo (Android roto o sin soporte), porque
+  entonces descartar dejaría sin red toda la TV. El DNS del sistema, que pregunta por todas las
+  apps, nunca se descarta por esto: pasa por el filtro igualmente.
 - Necesita el modo completo (en el ligero el tráfico de la app no pasa por el túnel). Si la app
   también está excluida, el bloqueo manda: vuelve a pasar por el túnel. Los uid compartidos del
   sistema (menores que 10000) nunca se cortan.
