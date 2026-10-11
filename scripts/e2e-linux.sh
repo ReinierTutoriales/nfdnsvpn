@@ -28,6 +28,8 @@ cleanup() {
 }
 trap cleanup EXIT
 trap "exit 130" INT TERM
+# Python for the test servers and clients; CI points this at a venv that has aioquic.
+PY=${E2E_PYTHON:-python3}
 tv() { ip netns exec "$TV" "$@"; }
 gw() { ip netns exec "$GW" "$@"; }
 srv() { ip netns exec "$SRV" "$@"; }
@@ -118,7 +120,7 @@ except ImportError:
     pass
 fake_dns()
 EOF
-srv python3 "$WORK/servers.py" "$WORK" > /dev/null 2>&1 & PIDS+=($!)
+srv "$PY" "$WORK/servers.py" "$WORK" > /dev/null 2>&1 & PIDS+=($!)
 srv python3 -m http.server 8080 --bind 192.0.2.1 --directory "$WORK" >/dev/null 2>&1 & PIDS+=($!)
 printf '||doubleclick.net^\n' > "$WORK/list.txt"
 ip netns exec "$GW" "$TUNNEL_BIN" tun0 192.0.2.1 "$WORK/list.txt" 10.111.0.1,8.8.8.8 > "$WORK/tunnel.log" 2>&1 &
@@ -189,27 +191,27 @@ FAILURES=0
 check() { # name expected actual
     if [[ "$3" == $2 ]]; then echo "PASS $1: $3"; else echo "FAIL $1: expected '$2', got '$3'"; FAILURES=$((FAILURES + 1)); fi
 }
-check "DNS bloqueado (resolvedor virtual)" "0.0.0.0" "$(app python3 "$WORK/client.py" dns 10.111.0.1 pubads.g.doubleclick.net)"
-check "DNS permitido (forzado aunque vaya a 8.8.8.8)" "192.0.2.1" "$(app python3 "$WORK/client.py" dns 8.8.8.8 example.org)"
+check "DNS bloqueado (resolvedor virtual)" "0.0.0.0" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 pubads.g.doubleclick.net)"
+check "DNS permitido (forzado aunque vaya a 8.8.8.8)" "192.0.2.1" "$(app "$PY" "$WORK/client.py" dns 8.8.8.8 example.org)"
 check "TCP (HTTP por la pila smoltcp)" "hello through the tunnel" "$(app curl -s --max-time 5 http://192.0.2.1:8080/small)"
-check "UDP (NAT)" "udp-ok" "$(app python3 "$WORK/client.py" udp)"
-check "DoT (puerto 853) cortado con RST" "refused*" "$(app python3 "$WORK/client.py" refused 853)"
-check "CNAME de rastreador desenmascarado" "0.0.0.0" "$(app python3 "$WORK/client.py" dns 10.111.0.1 cloaked.example)"
+check "UDP (NAT)" "udp-ok" "$(app "$PY" "$WORK/client.py" udp)"
+check "DoT (puerto 853) cortado con RST" "refused*" "$(app "$PY" "$WORK/client.py" refused 853)"
+check "CNAME de rastreador desenmascarado" "0.0.0.0" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 cloaked.example)"
 # --resolve skips DNS, so only the SNI / Host inspection can stop these.
 check "HTTPS permitido (SNI)" "hello through the tunnel" "$(app curl -sk --max-time 5 --resolve allowed.example:8443:192.0.2.1 https://allowed.example:8443/small)"
 # 35/56: the TLS handshake was cut after the ClientHello; 7 (no connection) would not prove it.
 check "HTTPS bloqueado por SNI" "blocked (curl [35][56])" "$(app curl -sk --max-time 5 --resolve ads.doubleclick.net:8443:192.0.2.1 https://ads.doubleclick.net:8443/small >/dev/null 2>&1 && echo served || echo "blocked (curl $?)")"
 if (( HAS_IPV6 )); then
-    check "DNS por IPv6 (resolvedor virtual fd00:6e66::1)" "0.0.0.0" "$(app python3 "$WORK/client.py" dns fd00:6e66::1 pubads.g.doubleclick.net)"
+    check "DNS por IPv6 (resolvedor virtual fd00:6e66::1)" "0.0.0.0" "$(app "$PY" "$WORK/client.py" dns fd00:6e66::1 pubads.g.doubleclick.net)"
     check "TCP por IPv6" "hello through the tunnel" "$(app curl -sg --max-time 5 'http://[2001:db8:1::1]:8080/small')"
-    check "UDP por IPv6" "udp-ok" "$(app python3 "$WORK/client.py" udp 2001:db8:1::1)"
+    check "UDP por IPv6" "udp-ok" "$(app "$PY" "$WORK/client.py" udp 2001:db8:1::1)"
 else
     echo "SKIP IPv6: el kernel no tiene IPv6"
 fi
-if python3 -c "import aioquic" 2>/dev/null; then
-    check "QUIC permitido (SNI del Initial)" "quic-ok" "$(app python3 "$WORK/client.py" quic allowed.example)"
+if "$PY" -c "import aioquic" 2>/dev/null; then
+    check "QUIC permitido (SNI del Initial)" "quic-ok" "$(app "$PY" "$WORK/client.py" quic allowed.example)"
     # Dropped by the tunnel: the handshake times out (any other error would prove nothing).
-    check "QUIC bloqueado por SNI del Initial" "quic-failed TimeoutError" "$(app python3 "$WORK/client.py" quic ads.doubleclick.net)"
+    check "QUIC bloqueado por SNI del Initial" "quic-failed TimeoutError" "$(app "$PY" "$WORK/client.py" quic ads.doubleclick.net)"
 else
     echo "SKIP QUIC: falta aioquic (pip install aioquic)"
 fi

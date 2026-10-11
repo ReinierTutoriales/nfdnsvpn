@@ -43,10 +43,11 @@ jobs:
       # Real TUN in network namespaces: DNS, TCP and UDP through the userspace stack.
       - name: Tunnel end-to-end test
         run: |
-          # System-wide: the test servers run as root and the test clients as nobody.
-          sudo python3 -m pip install --quiet --break-system-packages aioquic
+          # A venv outside $HOME: the test servers run as root and the test clients as nobody.
+          sudo python3 -m venv /opt/e2e-venv
+          sudo /opt/e2e-venv/bin/pip install --quiet aioquic
           (cd native/nfdns-core && cargo build --locked --release --example linux_tun)
-          sudo TUNNEL_BIN="$PWD/native/nfdns-core/target/release/examples/linux_tun" scripts/e2e-linux.sh
+          sudo E2E_PYTHON=/opt/e2e-venv/bin/python TUNNEL_BIN="$PWD/native/nfdns-core/target/release/examples/linux_tun" scripts/e2e-linux.sh
 
       - name: Unit tests and lint
         run: ./gradlew testDebugUnitTest lintDebug --stacktrace
