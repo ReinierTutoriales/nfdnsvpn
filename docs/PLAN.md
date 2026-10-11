@@ -220,6 +220,7 @@ encender, exclusiones) solo se puede probar en el dispositivo.
 | Elegir listas | Ajustes › Listas de bloqueo: AdGuard DNS, HaGeZi Ultimate, HaGeZi native, HaGeZi Encrypted DNS e IPs de DNS cifrado (activas por defecto); HaGeZi Pro, OISD small/big y uBlock Origin (opcionales). La lista propia de vídeo siempre está activa |
 | Lista blanca sin teclado | "Permitir un dominio bloqueado" en la pantalla principal muestra los últimos bloqueados; se elige con el mando. Se aplica como `@@||dominio^` (también subdominios) y se quita en Ajustes |
 | Apps excluidas | Ajustes › Apps excluidas: lista de apps con icono en el lanzador; su tráfico no pasa por la VPN (`addDisallowedApplication`) |
+| Apps sin internet | Ajustes › Apps sin internet (Android 10+): se descartan todas las conexiones de la app (ver «Apps sin internet») |
 | Aplicar cambios | Listas y lista blanca: se cambia el filtro en caliente, sin cortar conexiones. Exclusiones: se reinicia el túnel (las rutas y apps se fijan al crearlo) |
 | Actualización diaria | Mientras la VPN está activa, cada 6 h se mira si alguna lista tiene más de un día; si es así, se descarga y el filtro nuevo sustituye al anterior sin reiniciar |
 | Arranque al encender | `BootReceiver` (también tras actualizar la app) arranca la protección si estaba activa al apagar y el permiso de VPN ya está concedido |
@@ -267,6 +268,30 @@ dominio bloqueado ni conectarse a él.
 **Límites que siguen existiendo** (ninguna herramienta sin descifrar el tráfico los cierra):
 una app que lleve sus consultas dentro de su propio protocolo cifrado hacia sus servidores, o
 que se conecte a una IP fija sin TLS ni nombre. Equivale a la app que sirve sus propios anuncios.
+Para esas apps queda el último recurso: **cortarles internet por completo** (abajo).
+
+## Apps sin internet
+
+Si una app sirve sus propios anuncios o telemetría desde sus servidores, no hay forma de separar
+eso de su contenido sin descifrar. Lo que sí se puede hacer es cortarle la red entera, aunque deje
+de funcionar: en **Opciones › Apps sin internet** se marca la app.
+
+- Android dice a la app de VPN qué app abrió cada conexión
+  (`ConnectivityManager.getConnectionOwnerUid`, Android 10+). El núcleo pregunta el dueño de cada
+  conexión TCP y de cada flujo UDP nuevos y, si es una app marcada, descarta la conexión antes de
+  abrirla hacia el servidor: no le llega ni el SYN. También se quedan sin respuesta las consultas
+  DNS que esa app mande a su propio resolvedor.
+- Sin coste cuando no hay ninguna app marcada: el túnel no pregunta nada. Con alguna marcada,
+  cuesta una llamada al sistema por conexión nueva, en un hilo aparte; las conexiones ya
+  abiertas no se tocan.
+- Si Android no sabe el dueño (conexión ya cerrada, error del sistema), se deja pasar: con un
+  fallo así no debe quedarse sin red toda la TV.
+- Necesita el modo completo (en el ligero el tráfico de la app no pasa por el túnel). Si la app
+  también está excluida, el bloqueo manda: vuelve a pasar por el túnel. Los uid compartidos del
+  sistema (menores que 10000) nunca se cortan.
+- En `scripts/e2e-linux.sh` un segundo usuario Linux hace de app bloqueada (el dueño se busca en
+  `/proc/net`, lo que hace el kernel para Android): TCP, HTTPS, UDP y su DNS propio cortados, y
+  otra app conectando a la vez.
 
 ## Interfaz mínima
 

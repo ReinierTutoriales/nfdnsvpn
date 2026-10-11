@@ -37,6 +37,9 @@ tv() { ip netns exec "$TV" "$@"; }
 gw() { ip netns exec "$GW" "$@"; }
 srv() { ip netns exec "$SRV" "$@"; }
 # Proxy variables (set in some CI and sandbox environments) would send curl around the TUN.
+# A second "app", cut off the network entirely as an app blocked in Options is on Android.
+BLOCKED_USER=daemon
+blocked_app() { ip netns exec "$TV" runuser -u "$BLOCKED_USER" -- env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY "$@"; }
 app() { ip netns exec "$TV" runuser -u nobody -- env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY "$@"; }
 
 # CI builds the example as its normal user and passes TUNNEL_BIN, so root never runs cargo.
@@ -153,7 +156,7 @@ EOF
 srv "$PY" "$WORK/servers.py" "$WORK" > /dev/null 2>&1 & PIDS+=($!)
 srv python3 -m http.server 8080 --bind 192.0.2.1 --directory "$WORK" >/dev/null 2>&1 & PIDS+=($!)
 printf '||doubleclick.net^\n192.0.2.9\n' > "$WORK/list.txt"
-ip netns exec "$GW" "$TUNNEL_BIN" tun0 192.0.2.1 "$WORK/list.txt" 10.111.0.1,8.8.8.8 > "$WORK/tunnel.log" 2>&1 &
+ip netns exec "$GW" env NFDNS_BLOCK_UID="$(id -u "$BLOCKED_USER")" NFDNS_APPS_NETNS="/var/run/netns/$TV" "$TUNNEL_BIN" tun0 192.0.2.1 "$WORK/list.txt" 10.111.0.1,8.8.8.8 > "$WORK/tunnel.log" 2>&1 &
 TUNNEL_PID=$!   # ip netns exec execs the binary, so this is the tunnel itself
 PIDS+=($TUNNEL_PID)
 sleep 1
@@ -307,6 +310,12 @@ if "$PY" -c "import aioquic" 2>/dev/null; then
     check "QUIC en puerto no estándar permitido" "quic-ok" "$(app "$PY" "$WORK/client.py" quic allowed.example 4433)"
     check "QUIC en puerto no estándar bloqueado" "quic-failed TimeoutError" "$(app "$PY" "$WORK/client.py" quic ads.doubleclick.net 4433)"
 fi
+# Apps without internet: every TCP, UDP and DNS flow of that user is dropped, wherever it goes.
+check "App bloqueada: TCP cortado" "blocked*" "$(out=$(blocked_app curl -s --max-time 5 http://192.0.2.1:8080/small); [[ -z "$out" ]] && echo blocked || echo "served: $out")"
+check "App bloqueada: HTTPS cortado" "blocked*" "$(blocked_app curl -sk --max-time 5 --resolve allowed.example:8443:192.0.2.1 https://allowed.example:8443/small >/dev/null 2>&1 && echo served || echo "blocked (curl $?)")"
+check "App bloqueada: UDP cortado" "blocked" "$(blocked_app "$PY" "$WORK/client.py" udp 2>/dev/null || echo blocked)"
+check "App bloqueada: DNS propio sin respuesta" "blocked" "$(blocked_app "$PY" "$WORK/client.py" dns 8.8.8.8 example.org 2>/dev/null || echo blocked)"
+check "Otra app a la vez sí conecta" "hello through the tunnel" "$(app curl -s --max-time 5 http://192.0.2.1:8080/small)"
 check "HTTP bloqueado por Host" "blocked*" "$(out=$(app curl -s --max-time 5 -H 'Host: ads.doubleclick.net' http://192.0.2.1:8080/small); [[ -z "$out" ]] && echo blocked || echo "served: $out")"
 
 # Five bursts of 50 parallel connections: all must succeed, and memory must not keep growing

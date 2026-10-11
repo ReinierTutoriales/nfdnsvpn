@@ -35,6 +35,8 @@
     <string name="settings_allowed_remove">Quitar %1$s</string>
     <string name="settings_excluded">Apps excluidas de la VPN</string>
     <string name="settings_excluded_note">Su tráfico no pasa por el filtro. Úsalo solo para apps que dejen de funcionar con la protección.</string>
+    <string name="settings_blocked">Apps sin internet</string>
+    <string name="settings_blocked_note">La app marcada no puede conectarse a nada (anuncios, telemetría ni su propio contenido), aunque deje de funcionar. Necesita el modo completo. Si también está excluida, el bloqueo manda.</string>
     <string name="settings_status">Estado</string>
     <string name="settings_rules">Dominios en las listas: %1$d</string>
     <string name="settings_counters">Consultas: %1$d · Bloqueadas: %2$d · Conexiones: %3$d TCP, %4$d UDP · QUIC rechazado: %5$d</string>

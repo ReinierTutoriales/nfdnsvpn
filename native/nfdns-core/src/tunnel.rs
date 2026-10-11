@@ -6,6 +6,7 @@
 //! relayed through an ordinary socket. Those sockets do not loop back into the tunnel because the
 //! app excludes itself from the VPN (`addDisallowedApplication`).
 
+use crate::apps::{AppGate, OwnerLookup, Protocol};
 use crate::dns;
 use crate::filter::Filter;
 use crate::route::{classify, wrap_reply, Verdict};
@@ -153,6 +154,7 @@ pub struct Tunnel {
     intercepted: Arc<Vec<IpAddr>>,
     upstream: Arc<Mutex<Vec<SocketAddr>>>,
     stats: Arc<Stats>,
+    apps: Arc<AppGate>,
     stop: Notify,
 }
 
@@ -166,6 +168,7 @@ impl Tunnel {
             intercepted: Arc::new(intercepted),
             upstream: Arc::new(Mutex::new(Vec::new())),
             stats: Arc::new(Stats::default()),
+            apps: Arc::new(AppGate::default()),
             stop: Notify::new(),
         }
     }
@@ -184,6 +187,21 @@ impl Tunnel {
     /// Resolvers of the real network; may be called at any time from any thread.
     pub fn set_upstream(&self, servers: Vec<SocketAddr>) {
         *self.upstream.lock().unwrap() = servers;
+    }
+
+    /// Apps (Linux uids) cut off the network entirely: their new TCP connections and UDP flows
+    /// are dropped, whatever the destination. Takes effect only once a lookup is installed.
+    pub fn set_blocked_apps(&self, uids: impl IntoIterator<Item = u32>) {
+        self.apps.set_blocked(uids);
+    }
+
+    pub fn has_owner_lookup(&self) -> bool {
+        self.apps.has_lookup()
+    }
+
+    /// How to find the app behind a connection; consulted only while some app is blocked.
+    pub fn set_owner_lookup(&self, lookup: impl OwnerLookup) -> io::Result<()> {
+        self.apps.set_lookup(lookup)
     }
 
     pub fn stats(&self) -> &Stats {
@@ -240,10 +258,10 @@ impl Tunnel {
         });
 
         if let Some(tcp) = tcp {
-            tokio::spawn(relay_tcp(tcp, self.filter.clone(), self.stats.clone()));
+            tokio::spawn(relay_tcp(tcp, self.filter.clone(), self.stats.clone(), self.apps.clone()));
         }
         if let Some(udp) = udp {
-            tokio::spawn(relay_udp(udp, self.filter.clone(), self.stats.clone()));
+            tokio::spawn(relay_udp(udp, self.filter.clone(), self.stats.clone(), self.apps.clone()));
         }
 
         let mut buffer = vec![0u8; MAX_PACKET];
@@ -261,7 +279,19 @@ impl Tunnel {
                 Verdict::Forward { query, .. } => {
                     self.stats.queries.fetch_add(1, Ordering::Relaxed);
                     let servers = self.upstream.lock().unwrap().clone();
-                    tokio::spawn(forward_dns(data.to_vec(), query, servers, to_tun.clone(), self.filter.current(), self.stats.clone()));
+                    let forward = forward_dns(data.to_vec(), query, servers, to_tun.clone(), self.filter.current(), self.stats.clone());
+                    let (apps, stats) = (self.apps.clone(), self.stats.clone());
+                    let flow = crate::packet::parse(data).map(|p| (SocketAddr::new(p.src, p.src_port), SocketAddr::new(p.dst, p.dst_port)));
+                    tokio::spawn(async move {
+                        // An app with its own resolver: a blocked one gets no answer either.
+                        if let Some((local, remote)) = flow {
+                            if apps.blocks(Protocol::Udp, local, remote).await {
+                                stats.blocked.fetch_add(1, Ordering::Relaxed);
+                                return;
+                            }
+                        }
+                        forward.await;
+                    });
                 }
                 Verdict::Stack => {
                     if let Err(e) = stack_sink.send(data.to_vec()).await {
@@ -370,11 +400,16 @@ async fn forward_dns(
     }
 }
 
-async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: SharedFilter, stats: Arc<Stats>) {
-    while let Some((inbound, _local, remote)) = listener.next().await {
-        let (filter, stats) = (filter.current(), stats.clone());
+async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: SharedFilter, stats: Arc<Stats>, apps: Arc<AppGate>) {
+    while let Some((inbound, local, remote)) = listener.next().await {
+        let (filter, stats, apps) = (filter.current(), stats.clone(), apps.clone());
         tokio::spawn(async move {
             let _active = Active::new(&stats.tcp_active);
+            // Before connecting: a blocked app's server never even sees a SYN.
+            if apps.blocks(Protocol::Tcp, local, remote).await {
+                stats.blocked.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
             let (mut app_read, app_write) = tokio::io::split(inbound);
             // The real connection opens while the app's first bytes are inspected, and whatever
             // the server sends goes to the app at once: protocols where the server speaks first
@@ -463,7 +498,7 @@ async fn pipe<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(mut reader: R, mut wr
 
 /// UDP "NAT": one connected socket per (app address, destination) flow, closed after
 /// [`UDP_IDLE`] without traffic in either direction.
-async fn relay_udp(udp: netstack_smoltcp::UdpSocket, filter: SharedFilter, stats: Arc<Stats>) {
+async fn relay_udp(udp: netstack_smoltcp::UdpSocket, filter: SharedFilter, stats: Arc<Stats>, apps: Arc<AppGate>) {
     let (mut inbound, mut outbound) = udp.split();
     let (replies, mut pending) = mpsc::channel::<UdpMsg>(512);
     tokio::spawn(async move {
@@ -474,7 +509,7 @@ async fn relay_udp(udp: netstack_smoltcp::UdpSocket, filter: SharedFilter, stats
         }
     });
 
-    let context = Arc::new(UdpContext { replies, filter, stats });
+    let context = Arc::new(UdpContext { replies, filter, stats, apps });
     let mut flows: HashMap<(SocketAddr, SocketAddr), mpsc::Sender<Vec<u8>>> = HashMap::new();
     while let Some((data, local, remote)) = inbound.next().await {
         let key = (local, remote);
@@ -493,11 +528,13 @@ async fn relay_udp(udp: netstack_smoltcp::UdpSocket, filter: SharedFilter, stats
     }
 }
 
-/// What every UDP flow needs: the way back to the stack, the filter and the counters.
+/// What every UDP flow needs: the way back to the stack, the filter, the counters and the
+/// blocked apps.
 struct UdpContext {
     replies: mpsc::Sender<UdpMsg>,
     filter: SharedFilter,
     stats: Arc<Stats>,
+    apps: Arc<AppGate>,
 }
 
 fn start_udp_flow(
@@ -557,6 +594,11 @@ async fn udp_flow(local: SocketAddr, remote: SocketAddr, mut from_app: mpsc::Rec
     let stats = &context.stats;
     let _active = Active::new(&stats.udp_active);
     let Some(first) = from_app.recv().await else { return };
+    if context.apps.blocks(Protocol::Udp, local, remote).await {
+        stats.blocked.fetch_add(1, Ordering::Relaxed);
+        swallow(&mut from_app).await;
+        return;
+    }
     // QUIC on its usual port, or a QUIC Initial on any other (DoQ, apps on custom ports).
     let held = if remote.port() == QUIC_PORT || quic::looks_like_initial(&first) {
         match inspect_quic(first, &mut from_app, &context.filter.current()).await {
@@ -705,6 +747,40 @@ mod tests {
         let reply = packet::parse(&echoed).unwrap();
         assert_eq!((reply.src, reply.src_port, reply.dst, reply.dst_port), (ip("127.0.0.1"), echo_port, client, 41000));
         assert_eq!(reply.payload, b"ping over the tunnel");
+        tunnel.stop();
+    }
+
+    struct BlockedPort(u16);
+
+    impl OwnerLookup for BlockedPort {
+        fn owner(&mut self, _: Protocol, local: SocketAddr, _: SocketAddr) -> Option<u32> {
+            Some(if local.port() == self.0 { 10123 } else { 10200 })
+        }
+    }
+
+    #[test]
+    fn a_blocked_app_gets_nothing_through() {
+        let (app, tun) = fake_tun();
+        let tunnel = start(&tun);
+        tunnel.set_owner_lookup(BlockedPort(41001)).unwrap();
+        tunnel.set_blocked_apps([10123]);
+        let echo = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let echo_port = echo.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let mut buffer = [0u8; 512];
+            loop {
+                let (n, from) = echo.recv_from(&mut buffer).unwrap();
+                echo.send_to(&buffer[..n], from).unwrap();
+            }
+        });
+
+        let client = ip("10.111.0.2");
+        send(&app, &udp_packet(client, ip("127.0.0.1"), 41001, echo_port, b"from the blocked app"));
+        send(&app, &udp_packet(client, ip("127.0.0.1"), 41002, echo_port, b"from another app"));
+        let echoed = receive(&app);
+        let reply = packet::parse(&echoed).unwrap();
+        assert_eq!((reply.dst_port, reply.payload), (41002, &b"from another app"[..]));
+        assert!(tunnel.stats().encode().starts_with("0,1,"), "{}", tunnel.stats().encode());
         tunnel.stop();
     }
 

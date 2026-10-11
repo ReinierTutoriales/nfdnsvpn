@@ -11,6 +11,7 @@ object ShieldSettings {
     private const val ENABLED_LISTS = "enabledLists"
     private const val ALLOWED_DOMAINS = "allowedDomains"
     private const val EXCLUDED_APPS = "excludedApps"
+    private const val BLOCKED_APPS = "blockedApps"
     private const val START_ON_BOOT = "startOnBoot"
     private const val WANT_RUNNING = "wantRunning"
     private const val ASKED_TO_KEEP_RUNNING = "askedToKeepRunning"
@@ -53,6 +54,15 @@ object ShieldSettings {
         val apps = excludedApps(context).toMutableSet()
         if (excluded) apps += packageName else apps -= packageName
         prefs(context).edit { putStringSet(EXCLUDED_APPS, apps) }
+    }
+
+    /** Packages cut off the network entirely (full mode, Android 10+), even if that breaks them. */
+    fun blockedApps(context: Context): Set<String> = prefs(context).getStringSet(BLOCKED_APPS, emptySet())!!.toSet()
+
+    fun setAppBlocked(context: Context, packageName: String, blocked: Boolean) {
+        val apps = blockedApps(context).toMutableSet()
+        if (blocked) apps += packageName else apps -= packageName
+        prefs(context).edit { putStringSet(BLOCKED_APPS, apps) }
     }
 
     fun startOnBoot(context: Context) = prefs(context).getBoolean(START_ON_BOOT, true)

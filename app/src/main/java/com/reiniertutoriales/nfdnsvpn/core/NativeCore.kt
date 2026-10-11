@@ -33,6 +33,8 @@ object NativeCore {
     @JvmStatic external fun nativeTunnelSetFilter(tunnel: Long, filter: Long)
     /** Comma-separated resolvers of the real network; a bare IP means port 53. */
     @JvmStatic external fun nativeTunnelSetUpstream(tunnel: Long, servers: String)
+    /** Apps (uids) cut off the network entirely; asks [ConnectionOwner] who owns each new flow. */
+    @JvmStatic external fun nativeTunnelSetBlockedApps(tunnel: Long, uids: IntArray)
     /** Blocks until [nativeTunnelStop]; empty string, or the error that ended the tunnel. */
     @JvmStatic external fun nativeTunnelRun(tunnel: Long): String
     @JvmStatic external fun nativeTunnelStop(tunnel: Long)
@@ -80,6 +82,10 @@ class NativeTunnel(filter: Long, fd: Int, intercepted: List<String>) : Closeable
 
     @Synchronized fun setUpstream(servers: List<String>) {
         if (handle != 0L) NativeCore.nativeTunnelSetUpstream(handle, servers.joinToString(","))
+    }
+
+    @Synchronized fun setBlockedApps(uids: IntArray) {
+        if (handle != 0L) NativeCore.nativeTunnelSetBlockedApps(handle, uids)
     }
 
     @Synchronized fun stats(): TunnelStats? =

@@ -18,6 +18,8 @@ Dos modos, elegibles con el botón **Modo** de la pantalla:
   También en QUIC/HTTP3: lee el nombre del primer paquete; si no puede, fuerza a la app a TCP.
   Blindado contra bypass del DNS: resolvedor propio, DNS al router, DoT/DoQ, DoH por nombre o
   por IP, y TLS o QUIC en puertos raros (ver `docs/PLAN.md`).
+  Y si una app sirve sus propios anuncios o telemetría, se le puede **cortar internet por
+  completo** desde Opciones (Android 10+), aunque deje de funcionar.
 - **Ligero:** solo el DNS pasa por la app. Coste casi nulo, pero una app con DNS propio se lo
   puede saltar.
 
@@ -36,7 +38,7 @@ Lo que hacen ambos modos:
 - Pantalla mínima: un botón grande de activar/desactivar, el estado y el número de bloqueos.
 - **Opciones** (opcional): cambiar de modo, permitir un dominio bloqueado eligiéndolo con el
   mando, elegir listas (incluidas HaGeZi Pro, más ligera, OISD small/big y las de uBlock Origin, de las que se usan sus
-  reglas de dominio), quitar dominios permitidos, excluir apps que fallen, arranque al encender
+  reglas de dominio), quitar dominios permitidos, excluir apps que fallen, dejar apps sin internet, arranque al encender
   y estado/consumo.
 - Ligera: las listas se compilan leyendo los archivos línea a línea (pico de unos 17 MB al
   compilar, 7 MB después) y nada se consulta en segundo plano mientras no miras la pantalla.
@@ -88,7 +90,7 @@ cargo run --release --example measure -- lista1.txt lista2.txt
 | Ruta | Contenido |
 |---|---|
 | `native/vendor/netstack-smoltcp` | Pila TCP/IP (copia con un parche de consumo en reposo) |
-| `native/nfdns-core` | Núcleo Rust: clasificador, DNS (con CNAME), SNI/Host, QUIC Initial, filtro de dominios, túnel (pila TCP/IP y relay), JNI |
+| `native/nfdns-core` | Núcleo Rust: clasificador, DNS (con CNAME), SNI/Host, QUIC Initial, filtro de dominios, apps sin internet, túnel (pila TCP/IP y relay), JNI |
 | `scripts/e2e-linux.sh` | Prueba de extremo a extremo del túnel en *network namespaces* |
 | `app/src/main/java/.../vpn` | `ShieldVpnService` (TUN y rutas de cada modo), DNS de la red, ajustes, estado |
 | `app/src/main/java/.../lists` | Descarga y caché de listas |

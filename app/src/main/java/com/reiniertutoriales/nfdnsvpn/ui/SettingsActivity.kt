@@ -4,6 +4,7 @@ import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Debug
 import android.os.Process
@@ -34,6 +35,7 @@ import java.util.Date
 class SettingsActivity : ComponentActivity() {
     private lateinit var content: LinearLayout
     private var filterChanged = false
+    private var blockedAppsChanged = false
     /** Mode or app exclusions changed: routes are fixed per session, so the tunnel restarts. */
     private var restartNeeded = false
 
@@ -54,9 +56,13 @@ class SettingsActivity : ComponentActivity() {
         super.onPause()
         if (ShieldState.phase != ShieldState.Phase.STOPPED) {
             if (restartNeeded) ShieldVpnService.restart(this)
-            else if (filterChanged) ShieldVpnService.reload(this)
+            else {
+                if (filterChanged) ShieldVpnService.reload(this)
+                if (blockedAppsChanged) ShieldVpnService.applyBlockedApps(this)
+            }
         }
         filterChanged = false
+        blockedAppsChanged = false
         restartNeeded = false
     }
 
@@ -109,13 +115,27 @@ class SettingsActivity : ComponentActivity() {
             }
         }
 
+        val apps = launchableApps()
         section(R.string.settings_excluded)
         note(R.string.settings_excluded_note)
         val excluded = ShieldSettings.excludedApps(this)
-        for ((packageName, label) in launchableApps()) {
+        for ((packageName, label) in apps) {
             checkbox(label, packageName in excluded) { checked ->
                 ShieldSettings.setAppExcluded(this, packageName, checked)
                 restartNeeded = true
+            }
+        }
+
+        if (Build.VERSION.SDK_INT >= 29) {
+            section(R.string.settings_blocked)
+            note(R.string.settings_blocked_note)
+            val blocked = ShieldSettings.blockedApps(this)
+            for ((packageName, label) in apps) {
+                checkbox(label, packageName in blocked) { checked ->
+                    ShieldSettings.setAppBlocked(this, packageName, checked)
+                    // An excluded app bypasses the tunnel: it has to come back in first.
+                    if (packageName in ShieldSettings.excludedApps(this)) restartNeeded = true else blockedAppsChanged = true
+                }
             }
         }
 

@@ -5,6 +5,7 @@
 //! a filter handle lives until `nativeDestroy` or until `nativeTunnelCreate` takes it over, and a
 //! tunnel handle lives until `nativeTunnelFree`.
 
+pub mod apps;
 pub mod dns;
 pub mod filter;
 pub mod packet;
@@ -15,7 +16,8 @@ pub mod tunnel;
 
 use filter::{Filter, FilterBuilder};
 use jni::errors::ThrowRuntimeExAndDefault;
-use jni::objects::{JClass, JObjectArray, JString};
+use jni::objects::{JClass, JIntArray, JObjectArray, JString};
+use jni::JValue;
 use jni::sys::{jboolean, jint, jlong};
 use jni::EnvUnowned;
 use std::net::{IpAddr, SocketAddr};
@@ -280,6 +282,80 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
         // SAFETY: see `tunnel`; `nativeTunnelRun` has returned before Kotlin frees it.
         drop(unsafe { Box::from_raw(handle as *mut Tunnel) });
     }
+}
+
+const FIND_SIGNATURE: jni::signature::MethodSignature<'static, 'static> = jni::jni_sig!("(I[BI[BI)I");
+
+/// Asks Kotlin (`ConnectionOwner.find`, which calls `ConnectivityManager.getConnectionOwnerUid`)
+/// who owns a connection. Runs on the tunnel's lookup thread, attached to the VM once.
+struct JavaOwnerLookup {
+    vm: jni::JavaVM,
+    class: jni::refs::Global<JClass<'static>>,
+}
+
+impl apps::OwnerLookup for JavaOwnerLookup {
+    fn owner(&mut self, protocol: apps::Protocol, local: SocketAddr, remote: SocketAddr) -> Option<u32> {
+        let protocol = match protocol {
+            apps::Protocol::Tcp => libc::IPPROTO_TCP,
+            apps::Protocol::Udp => libc::IPPROTO_UDP,
+        };
+        let uid = self.vm.attach_current_thread(|env| -> jni::errors::Result<jint> {
+            let local_ip = env.byte_array_from_slice(&ip_bytes(local.ip()))?;
+            let remote_ip = env.byte_array_from_slice(&ip_bytes(remote.ip()))?;
+            env.call_static_method(
+                &self.class,
+                jni::jni_str!("find"),
+                FIND_SIGNATURE,
+                &[
+                    JValue::Int(protocol),
+                    JValue::from(&local_ip),
+                    JValue::Int(local.port().into()),
+                    JValue::from(&remote_ip),
+                    JValue::Int(remote.port().into()),
+                ],
+            )?
+            .i()
+        });
+        uid.ok().and_then(|uid| u32::try_from(uid).ok())
+    }
+}
+
+fn ip_bytes(ip: IpAddr) -> Vec<u8> {
+    match ip {
+        IpAddr::V4(ip) => ip.octets().to_vec(),
+        IpAddr::V6(ip) => ip.octets().to_vec(),
+    }
+}
+
+/// Apps (uids) cut off the network entirely. The first non-empty call installs the owner lookup;
+/// it must come from a Java thread, so the app's class loader finds `ConnectionOwner`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelSetBlockedApps<'caller>(
+    mut unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    uids: JIntArray<'caller>,
+) {
+    unowned
+        .with_env(|env| -> jni::errors::Result<()> {
+            let Some(t) = tunnel(handle) else { return Ok(()) };
+            let mut blocked = vec![0; uids.len(env)?];
+            uids.get_region(env, 0, &mut blocked)?;
+            if !blocked.is_empty() && !t.has_owner_lookup() {
+                let class = env.find_class(jni::jni_str!("com/reiniertutoriales/nfdnsvpn/core/ConnectionOwner"))?;
+                // Fails here, as NoSuchMethodError, if R8 or a refactor broke the callback.
+                env.get_static_method_id(&class, jni::jni_str!("find"), FIND_SIGNATURE)?;
+                let lookup = JavaOwnerLookup { vm: env.get_java_vm()?, class: env.new_global_ref(class)? };
+                if t.set_owner_lookup(lookup).is_err() {
+                    // Reaches Kotlin as an exception once this call returns.
+                    env.throw_new(jni::jni_str!("java/lang/IllegalStateException"), jni::jni_str!("No se pudo iniciar el bloqueo de apps"))?;
+                    return Ok(());
+                }
+            }
+            t.set_blocked_apps(blocked.into_iter().filter_map(|uid| u32::try_from(uid).ok()));
+            Ok(())
+        })
+        .resolve::<ThrowRuntimeExAndDefault>()
 }
 
 #[cfg(test)]

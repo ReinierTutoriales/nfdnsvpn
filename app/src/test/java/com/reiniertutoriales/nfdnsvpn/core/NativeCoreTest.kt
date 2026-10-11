@@ -61,6 +61,36 @@ class NativeCoreTest {
     }
 
     @Test
+    fun blockedAppsInstallTheOwnerCallback() {
+        val tunnel = NativeTunnel(NativeCore.nativeCreate(arrayOf("")), -1, emptyList())
+        try {
+            // Finds ConnectionOwner and checks find()'s signature from native code.
+            tunnel.setBlockedApps(intArrayOf(10123, 10124))
+            tunnel.setBlockedApps(intArrayOf())
+        } finally {
+            tunnel.close()
+        }
+    }
+
+    @Test
+    fun connectionOwnerPassesAddressesAndHidesFailures() {
+        try {
+            ConnectionOwner.lookup = null
+            assertEquals(ConnectionOwner.UNKNOWN, ConnectionOwner.find(6, byteArrayOf(10, 111, 0, 2), 40000, byteArrayOf(1, 1, 1, 1), 443))
+            ConnectionOwner.lookup = { protocol, local, remote ->
+                assertEquals("6 /10.111.0.2:40000 /[2001:db8:0:0:0:0:0:1]:443", "$protocol $local $remote")
+                10123
+            }
+            val v6 = ByteArray(16).also { it[0] = 0x20; it[1] = 0x01; it[2] = 0x0d; it[3] = 0xb8.toByte(); it[15] = 1 }
+            assertEquals(10123, ConnectionOwner.find(6, byteArrayOf(10, 111, 0, 2), 40000, v6, 443))
+            ConnectionOwner.lookup = { _, _, _ -> throw SecurityException("not the active VPN") }
+            assertEquals(ConnectionOwner.UNKNOWN, ConnectionOwner.find(17, byteArrayOf(10, 111, 0, 2), 1, byteArrayOf(1, 1, 1, 1), 2))
+        } finally {
+            ConnectionOwner.lookup = null
+        }
+    }
+
+    @Test
     fun parsesStats() {
         val stats = TunnelStats.parse("12,3,4,5,6\nads.example.com\ntracker.example.org")!!
         assertEquals(listOf(12L, 3L, 4L, 5L, 6L), listOf(stats.queries, stats.blocked, stats.tcp, stats.udp, stats.quicRefused))
