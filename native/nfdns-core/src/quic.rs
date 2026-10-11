@@ -5,18 +5,17 @@
 //! secret is involved: this is the QUIC equivalent of reading the SNI of a TLS ClientHello.
 
 use crate::sni::{self, Peek};
-use aes::cipher::{Array, BlockCipherEncrypt, KeyInit};
 use aes::Aes128;
-use aes_gcm::aead::{Aead, Payload};
+use aes::cipher::{Array, BlockCipherEncrypt, KeyInit};
 use aes_gcm::Aes128Gcm;
+use aes_gcm::aead::{Aead, Payload};
 use hkdf::Hkdf;
 use sha2::Sha256;
 use std::collections::BTreeMap;
 
 const VERSION_1: u32 = 1;
-const INITIAL_SALT_V1: [u8; 20] = [
-    0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a,
-];
+const INITIAL_SALT_V1: [u8; 20] =
+    [0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a];
 /// A ClientHello larger than this is not plausible; give up instead of buffering more.
 const MAX_CRYPTO: usize = 64 * 1024;
 
@@ -120,9 +119,7 @@ fn open_initial(datagram: &[u8], expected_dcid: Option<&[u8]>) -> Option<(Vec<u8
         *n ^= p;
     }
     let cipher = Aes128Gcm::new_from_slice(&keys.key).ok()?;
-    let plaintext = cipher
-        .decrypt(&Array::from(nonce), Payload { msg: &packet[pn_offset + pn_length..], aad: &header })
-        .ok()?;
+    let plaintext = cipher.decrypt(&Array::from(nonce), Payload { msg: &packet[pn_offset + pn_length..], aad: &header }).ok()?;
     Some((plaintext, dcid))
 }
 
@@ -164,9 +161,7 @@ fn crypto_frames(payload: &[u8]) -> Option<Vec<(u64, Vec<u8>)>> {
 /// Cheap test, without decryption, for the first datagram of a QUIC v1 connection: a long-header
 /// Initial packet in a datagram padded to at least 1200 bytes, as RFC 9000 §14.1 requires.
 pub fn looks_like_initial(datagram: &[u8]) -> bool {
-    datagram.len() >= 1200
-        && datagram[0] & 0xF0 == 0xC0
-        && datagram.get(1..5).is_some_and(|version| version == VERSION_1.to_be_bytes())
+    datagram.len() >= 1200 && datagram[0] & 0xF0 == 0xC0 && datagram.get(1..5).is_some_and(|version| version == VERSION_1.to_be_bytes())
 }
 
 /// Gathers the client's Initial packets of one QUIC connection until the ClientHello is whole.
@@ -281,10 +276,8 @@ mod tests {
         for (n, p) in nonce[8..].iter_mut().zip(packet_number.to_be_bytes()) {
             *n ^= p;
         }
-        let sealed = Aes128Gcm::new_from_slice(&keys.key)
-            .unwrap()
-            .encrypt(&Array::from(nonce), Payload { msg: &frames, aad: &header })
-            .unwrap();
+        let sealed =
+            Aes128Gcm::new_from_slice(&keys.key).unwrap().encrypt(&Array::from(nonce), Payload { msg: &frames, aad: &header }).unwrap();
         let mut packet = header;
         packet.extend_from_slice(&sealed);
         let sample: [u8; 16] = packet[pn_offset + 4..pn_offset + 20].try_into().unwrap();

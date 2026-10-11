@@ -158,7 +158,7 @@ srv python3 -m http.server 8080 --bind 192.0.2.1 --directory "$WORK" >/dev/null 
 printf '||doubleclick.net^\n192.0.2.9\n' > "$WORK/list.txt"
 ip netns exec "$GW" env NFDNS_BLOCK_UID="$(id -u "$BLOCKED_USER")" NFDNS_APPS_NETNS="/var/run/netns/$TV" "$TUNNEL_BIN" tun0 192.0.2.1 "$WORK/list.txt" 10.111.0.1,8.8.8.8 > "$WORK/tunnel.log" 2>&1 &
 TUNNEL_PID=$!   # ip netns exec execs the binary, so this is the tunnel itself
-PIDS+=($TUNNEL_PID)
+PIDS+=("$TUNNEL_PID")
 sleep 1
 # The tunnel keeps its fd while the device moves to the apps' namespace.
 ip -n "$GW" link set tun0 netns "$TV"
@@ -274,6 +274,8 @@ EOF
 chmod 755 "$WORK" && chmod 644 "$WORK"/*
 
 FAILURES=0
+# The expected value is a glob pattern on purpose.
+# shellcheck disable=SC2053
 check() { # name expected actual
     if [[ "$3" == $2 ]]; then echo "PASS $1: $3"; else echo "FAIL $1: expected '$2', got '$3'"; FAILURES=$((FAILURES + 1)); fi
 }

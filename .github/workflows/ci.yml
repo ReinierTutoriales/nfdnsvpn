@@ -35,6 +35,16 @@ jobs:
         with:
           cache-provider: basic
 
+      # Code policy (CLAUDE.md): formatted, no clippy warnings, scripts clean.
+      - name: Rust format and clippy
+        working-directory: native/nfdns-core
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Shell scripts
+        run: shellcheck -S warning scripts/*.sh .claude/hooks/*.sh
+
       - name: Rust tests
         working-directory: native/nfdns-core
         run: cargo test --locked

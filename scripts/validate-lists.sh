@@ -13,9 +13,9 @@ trap 'rm -rf "$WORK"' EXIT
 HZ=https://raw.githubusercontent.com/hagezi/dns-blocklists/main
 LISTS=(
     https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
-    $HZ/adblock/ultimate.txt
-    $HZ/adblock/doh.txt
-    $HZ/ips/doh.txt
+    "$HZ/adblock/ultimate.txt"
+    "$HZ/adblock/doh.txt"
+    "$HZ/ips/doh.txt"
     https://raw.githubusercontent.com/dibdot/DoH-IP-blocklists/master/doh-ipv4.txt
     https://raw.githubusercontent.com/dibdot/DoH-IP-blocklists/master/doh-ipv6.txt
 )

@@ -9,12 +9,12 @@
 use crate::apps::{AppGate, OwnerLookup, Protocol};
 use crate::dns;
 use crate::filter::Filter;
-use crate::route::{classify, wrap_reply, Verdict};
 use crate::quic::{self, InitialReader, QuicPeek};
+use crate::route::{Verdict, classify, wrap_reply};
 use crate::sni::{self, Peek};
 use futures::{SinkExt, StreamExt};
-use netstack_smoltcp::udp::UdpMsg;
 use netstack_smoltcp::StackBuilder;
+use netstack_smoltcp::udp::UdpMsg;
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -25,8 +25,8 @@ use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
-use tokio::sync::{mpsc, oneshot, Notify};
-use tokio::time::{timeout, timeout_at, Instant};
+use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::time::{Instant, timeout, timeout_at};
 
 const MAX_PACKET: usize = 65535;
 const MTU: usize = 1500;
@@ -64,10 +64,8 @@ const QUIC_PEEK_DATAGRAMS: usize = 8;
 const REFUSED_FLOW_IDLE: Duration = Duration::from_secs(30);
 
 /// Quad9, only when the network announces no resolver.
-const FALLBACK_UPSTREAM: [SocketAddr; 2] = [
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 53),
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(149, 112, 112, 112)), 53),
-];
+const FALLBACK_UPSTREAM: [SocketAddr; 2] =
+    [SocketAddr::new(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 53), SocketAddr::new(IpAddr::V4(Ipv4Addr::new(149, 112, 112, 112)), 53)];
 
 #[derive(Default)]
 pub struct Stats {
@@ -284,11 +282,11 @@ impl Tunnel {
                     let flow = crate::packet::parse(data).map(|p| (SocketAddr::new(p.src, p.src_port), SocketAddr::new(p.dst, p.dst_port)));
                     tokio::spawn(async move {
                         // An app with its own resolver: a blocked one gets no answer either.
-                        if let Some((local, remote)) = flow {
-                            if apps.blocks(Protocol::Udp, local, remote).await {
-                                stats.blocked.fetch_add(1, Ordering::Relaxed);
-                                return;
-                            }
+                        if let Some((local, remote)) = flow
+                            && apps.blocks(Protocol::Udp, local, remote).await
+                        {
+                            stats.blocked.fetch_add(1, Ordering::Relaxed);
+                            return;
                         }
                         forward.await;
                     });
@@ -646,7 +644,7 @@ async fn udp_flow(local: SocketAddr, remote: SocketAddr, mut from_app: mpsc::Rec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dns::{build_query, TYPE_A};
+    use crate::dns::{TYPE_A, build_query};
     use crate::filter::FilterBuilder;
     use crate::packet;
     use crate::packet::tests::udp_packet;
@@ -672,7 +670,13 @@ mod tests {
         let mut buffer = vec![0u8; MAX_PACKET];
         // SAFETY: valid descriptor, option value and buffer.
         unsafe {
-            libc::setsockopt(fd.as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVTIMEO, (&timeout as *const libc::timeval).cast(), std::mem::size_of::<libc::timeval>() as u32);
+            libc::setsockopt(
+                fd.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                (&timeout as *const libc::timeval).cast(),
+                std::mem::size_of::<libc::timeval>() as u32,
+            );
             let n = libc::read(fd.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len());
             assert!(n > 0, "no packet came back from the tunnel");
             buffer.truncate(n as usize);

@@ -115,10 +115,10 @@ pub fn cname_targets(message: &[u8]) -> Vec<String> {
         let Some((_, next)) = read_name(message, at) else { break };
         let (Some(kind), Some(length)) = (read_u16(message, next), read_u16(message, next + 8)) else { break };
         let rdata = next + 10;
-        if kind == TYPE_CNAME {
-            if let Some((target, _)) = read_name(message, rdata) {
-                targets.push(target);
-            }
+        if kind == TYPE_CNAME
+            && let Some((target, _)) = read_name(message, rdata)
+        {
+            targets.push(target);
         }
         at = rdata + length as usize;
     }

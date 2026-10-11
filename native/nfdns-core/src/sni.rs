@@ -192,7 +192,10 @@ mod tests {
 
     #[test]
     fn reads_http_host() {
-        assert_eq!(server_name(b"GET /ad HTTP/1.1\r\nUser-Agent: x\r\nhost: Ads.Example.com:8080\r\n\r\n"), Peek::Name("ads.example.com".into()));
+        assert_eq!(
+            server_name(b"GET /ad HTTP/1.1\r\nUser-Agent: x\r\nhost: Ads.Example.com:8080\r\n\r\n"),
+            Peek::Name("ads.example.com".into())
+        );
         assert_eq!(server_name(b"CONNECT tracker.example.org:443 HTTP/1.1\r\n\r\n"), Peek::Name("tracker.example.org".into()));
         assert_eq!(server_name(b"GET / HTTP/1.1\r\nHost: ads.exa"), Peek::NeedMore);
         assert_eq!(server_name(b"GE"), Peek::NeedMore);

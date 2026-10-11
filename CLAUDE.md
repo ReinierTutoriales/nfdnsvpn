@@ -45,6 +45,33 @@ El hook `.claude/hooks/session-start.sh` lo aplica automáticamente y
 `.claude/hooks/guard-git.sh` bloquea cualquier commit o push que incumpla estas
 reglas.
 
+## Políticas de código
+
+Obligatorias para todo cambio. El CI las comprueba y un fallo bloquea el cambio.
+
+1. **Sin errores ni avisos.** Rust: `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings`.
+   Kotlin: el compilador trata los avisos como errores (`allWarningsAsErrors`) y lint también
+   (`warningsAsErrors`). Scripts: `shellcheck -S warning`. Una excepción solo se admite escrita en
+   `app/lint.xml` (o en un `#[allow]` / `# shellcheck disable`) junto al motivo.
+2. **Probado.** Cada comportamiento nuevo lleva su test: unitario en Rust o JVM, y en
+   `scripts/e2e-linux.sh` si toca el túnel. No se publica nada sin pasar `cargo test`,
+   `./gradlew testDebugUnitTest lintDebug assembleRelease` y la prueba e2e, y se informa del
+   resultado real.
+3. **Óptimo.** En el camino de cada paquete o conexión no hay asignaciones, bloqueos ni llamadas
+   al sistema evitables. Nada se ejecuta en segundo plano si no hace falta. Lo opcional no cuesta
+   nada mientras está desactivado. Toda cola, caché o búfer tiene un límite. Las mejoras de
+   rendimiento se miden (`--bench`, `examples/measure.rs`) antes de afirmarlas.
+4. **Legible.** Nombres descriptivos y funciones cortas con una sola tarea. Los comentarios explican
+   el porqué (decisiones, límites, medidas), no lo que el código ya dice. El estilo es el del
+   archivo de alrededor y la documentación (`README.md`, `docs/PLAN.md`) se actualiza en el mismo
+   cambio.
+5. **Actual.** Dependencias en su última versión estable (Rust, AGP, Kotlin, AndroidX, Gradle),
+   edición 2024 de Rust, y `Cargo.lock` y el wrapper de Gradle versionados. Se revisa al empezar
+   cada fase. La excepción vigente, `targetSdk` 36, está justificada en `app/lint.xml`.
+6. **Seguro ante fallos.** Sin `unwrap` sobre datos de red o del usuario. Todo error de E/S se
+   trata o se registra. Si un fallo del sistema impide decidir, se deja pasar el tráfico solo
+   cuando bloquearlo dejaría sin red todo el dispositivo, y eso se documenta en el código.
+
 ## Forma de trabajar
 
 - Respuestas en español, directas, sin relleno.

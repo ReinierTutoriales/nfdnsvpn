@@ -167,9 +167,7 @@ pub fn tcp_reset(request: &Packet<'_>) -> Option<Vec<u8>> {
     let (seq, ack, reply_flags) = if flags & TCP_ACK != 0 {
         (their_ack, 0, TCP_RST)
     } else {
-        let length = request.payload.len() as u32
-            + u32::from(flags & TCP_SYN != 0)
-            + u32::from(flags & TCP_FIN != 0);
+        let length = request.payload.len() as u32 + u32::from(flags & TCP_SYN != 0) + u32::from(flags & TCP_FIN != 0);
         (0, their_seq.wrapping_add(length), TCP_RST | TCP_ACK)
     };
     let mut tcp = Vec::with_capacity(20);

@@ -55,7 +55,9 @@ impl ProcLookup {
     fn forms(ip: IpAddr, v6_table: bool) -> Vec<String> {
         match (ip, v6_table) {
             (IpAddr::V4(_), false) => vec![Self::encode(ip), Self::encode(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))],
-            (IpAddr::V4(v4), true) => vec![Self::encode(IpAddr::V6(v4.to_ipv6_mapped())), Self::encode(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED))],
+            (IpAddr::V4(v4), true) => {
+                vec![Self::encode(IpAddr::V6(v4.to_ipv6_mapped())), Self::encode(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED))]
+            }
             (IpAddr::V6(_), true) => vec![Self::encode(ip), Self::encode(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED))],
             (IpAddr::V6(_), false) => Vec::new(),
         }
@@ -76,7 +78,9 @@ impl OwnerLookup for ProcLookup {
         }
         let name = if protocol == Protocol::Tcp { "tcp" } else { "udp" };
         for v6_table in [false, true] {
-            let Ok(text) = std::fs::read_to_string(format!("/proc/thread-self/net/{name}{}", if v6_table { "6" } else { "" })) else { continue };
+            let Ok(text) = std::fs::read_to_string(format!("/proc/thread-self/net/{name}{}", if v6_table { "6" } else { "" })) else {
+                continue;
+            };
             let (locals, remotes) = (Self::forms(local.ip(), v6_table), Self::forms(remote.ip(), v6_table));
             let Some((exact_remote, any_remote)) = remotes.first().zip(remotes.get(1)) else { continue };
             let local_port = format!("{:04X}", local.port());
@@ -85,7 +89,8 @@ impl OwnerLookup for ProcLookup {
                 let fields: Vec<&str> = line.split_whitespace().collect();
                 let (Some(l), Some(r), Some(uid)) = (fields.get(1), fields.get(2), fields.get(7)) else { continue };
                 let (Some((l_ip, l_port)), Some((r_ip, r_port))) = (l.split_once(':'), r.split_once(':')) else { continue };
-                let local_ok = l_port == local_port && (if protocol == Protocol::Tcp { l_ip == locals[0] } else { locals.iter().any(|f| f == l_ip) });
+                let local_ok =
+                    l_port == local_port && (if protocol == Protocol::Tcp { l_ip == locals[0] } else { locals.iter().any(|f| f == l_ip) });
                 let remote_ok = (r_ip == exact_remote && r_port == remote_port)
                     || (protocol == Protocol::Udp && r_ip == any_remote && r_port == "0000");
                 if local_ok && remote_ok {

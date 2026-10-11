@@ -4,9 +4,9 @@ use nfdns::filter::FilterBuilder;
 use std::time::Instant;
 
 fn status_kb(field: &str) -> u64 {
-    std::fs::read_to_string("/proc/self/status").ok()
-        .and_then(|s| s.lines().find(|l| l.starts_with(field))
-            .and_then(|l| l.split_whitespace().nth(1)?.parse().ok()))
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| s.lines().find(|l| l.starts_with(field)).and_then(|l| l.split_whitespace().nth(1)?.parse().ok()))
         .unwrap_or(0)
 }
 
@@ -33,7 +33,15 @@ fn main() {
     let lookup = start.elapsed() / 1_000_000;
     println!(
         "rules={} filter={} KB build={:?} rss_delta={} KB peak_delta={} KB lookup={:?} blocked={}",
-        filter.rule_count(), filter.memory_bytes() / 1024, built, rss_kb() - before, status_kb("VmHWM:") - before, lookup, blocked,
+        filter.rule_count(),
+        filter.memory_bytes() / 1024,
+        built,
+        rss_kb() - before,
+        status_kb("VmHWM:") - before,
+        lookup,
+        blocked,
     );
-    for n in names { println!("  {n}: {}", filter.is_blocked(n)); }
+    for n in names {
+        println!("  {n}: {}", filter.is_blocked(n));
+    }
 }

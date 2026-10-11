@@ -106,10 +106,7 @@ impl Filter {
 
     /// Heap held by the compiled filter (the build itself peaks higher).
     pub fn memory_bytes(&self) -> usize {
-        [&self.block_suffix, &self.block_exact, &self.allow_suffix, &self.allow_exact]
-            .iter()
-            .map(|set| set.memory_bytes())
-            .sum()
+        [&self.block_suffix, &self.block_exact, &self.allow_suffix, &self.allow_exact].iter().map(|set| set.memory_bytes()).sum()
     }
 }
 
@@ -255,11 +252,7 @@ fn parse_line(line: &str) -> Vec<Rule> {
     let mut tokens = line.split_whitespace();
     let Some(first) = tokens.next() else { return Vec::new() };
     if HOSTS_ADDRESSES.contains(&first) {
-        return tokens
-            .filter(|token| !HOSTS_IGNORED.contains(token))
-            .filter_map(normalize_domain)
-            .map(Rule::BlockExact)
-            .collect();
+        return tokens.filter(|token| !HOSTS_IGNORED.contains(token)).filter_map(normalize_domain).map(Rule::BlockExact).collect();
     }
     if tokens.next().is_none() {
         if let Ok(ip) = first.parse::<IpAddr>() {
@@ -274,8 +267,16 @@ fn parse_line(line: &str) -> Vec<Rule> {
 /// cut local services (the router's admin page, casting) rather than an encrypted DNS server.
 fn blockable_ip(ip: IpAddr) -> Option<IpAddr> {
     let local = match ip {
-        IpAddr::V4(a) => a.is_private() || a.is_loopback() || a.is_link_local() || a.is_unspecified() || a.is_multicast() || a.is_broadcast(),
-        IpAddr::V6(a) => a.is_loopback() || a.is_unspecified() || a.is_multicast() || (a.segments()[0] & 0xfe00) == 0xfc00 || (a.segments()[0] & 0xffc0) == 0xfe80,
+        IpAddr::V4(a) => {
+            a.is_private() || a.is_loopback() || a.is_link_local() || a.is_unspecified() || a.is_multicast() || a.is_broadcast()
+        }
+        IpAddr::V6(a) => {
+            a.is_loopback()
+                || a.is_unspecified()
+                || a.is_multicast()
+                || (a.segments()[0] & 0xfe00) == 0xfc00
+                || (a.segments()[0] & 0xffc0) == 0xfe80
+        }
     };
     (!local).then_some(ip)
 }
@@ -362,7 +363,9 @@ mod tests {
 
     #[test]
     fn bare_ip_lines_block_public_addresses_only() {
-        let f = filter("1.1.1.1\n8.8.8.8             # dns.google\n2606:4700:4700::1111  # cloudflare\n192.168.1.1\n127.0.0.1\nfd00::1\n224.0.0.1\n1.1.1.1\n");
+        let f = filter(
+            "1.1.1.1\n8.8.8.8             # dns.google\n2606:4700:4700::1111  # cloudflare\n192.168.1.1\n127.0.0.1\nfd00::1\n224.0.0.1\n1.1.1.1\n",
+        );
         assert!(f.is_ip_blocked(&"1.1.1.1".parse().unwrap()));
         assert!(f.is_ip_blocked(&"8.8.8.8".parse().unwrap()));
         assert!(f.is_ip_blocked(&"2606:4700:4700::1111".parse().unwrap()));

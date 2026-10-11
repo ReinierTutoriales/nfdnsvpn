@@ -64,7 +64,7 @@ pub fn wrap_reply(request: &[u8], answer: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dns::{build_query, TYPE_A};
+    use crate::dns::{TYPE_A, build_query};
     use crate::filter::FilterBuilder;
     use crate::packet::tests::{tcp_syn, udp_packet};
 

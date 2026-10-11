@@ -30,7 +30,7 @@ if echo "$cmd" | grep -Eq '\bgit\b.*\bpush\b'; then
   range="$base..HEAD"
   git rev-parse -q --verify "$base" >/dev/null || range="HEAD"
   bad=$(git log "$range" --format='%h|%an|%ae|%cn|%ce' | while IFS='|' read -r h an ae cn ce; do
-    if [ "$an" != "$OWNER_NAME" ] || [ "$ae" != "$OWNER_EMAIL" ] || [ "$ce" != "$OWNER_EMAIL" ]; then
+    if [ "$an" != "$OWNER_NAME" ] || [ "$ae" != "$OWNER_EMAIL" ] || [ "$cn" != "$OWNER_NAME" ] || [ "$ce" != "$OWNER_EMAIL" ]; then
       echo "$h"
     fi
   done)

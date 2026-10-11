@@ -97,7 +97,13 @@ android {
 
     lint {
         abortOnError = true
-        warningsAsErrors = false
+        warningsAsErrors = true
+    }
+}
+
+kotlin {
+    compilerOptions {
+        allWarningsAsErrors = true
     }
 }
 

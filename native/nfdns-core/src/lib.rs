@@ -15,11 +15,11 @@ pub mod sni;
 pub mod tunnel;
 
 use filter::{Filter, FilterBuilder};
+use jni::EnvUnowned;
+use jni::JValue;
 use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JClass, JIntArray, JObjectArray, JString};
-use jni::JValue;
 use jni::sys::{jboolean, jint, jlong};
-use jni::EnvUnowned;
 use std::net::{IpAddr, SocketAddr};
 use tunnel::Tunnel;
 
@@ -30,10 +30,7 @@ pub fn parse_servers(list: &str) -> Vec<SocketAddr> {
     list.split(',')
         .map(str::trim)
         .filter_map(|entry| {
-            entry
-                .parse::<SocketAddr>()
-                .ok()
-                .or_else(|| entry.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, DNS_PORT)))
+            entry.parse::<SocketAddr>().ok().or_else(|| entry.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, DNS_PORT)))
         })
         .collect()
 }
@@ -243,9 +240,7 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
         Some(t) => t.run().err().map(|e| e.to_string()).unwrap_or_default(),
         None => "no tunnel".to_string(),
     };
-    unowned
-        .with_env(|env| -> jni::errors::Result<JString<'caller>> { env.new_string(outcome) })
-        .resolve::<ThrowRuntimeExAndDefault>()
+    unowned.with_env(|env| -> jni::errors::Result<JString<'caller>> { env.new_string(outcome) }).resolve::<ThrowRuntimeExAndDefault>()
 }
 
 #[unsafe(no_mangle)]
@@ -267,9 +262,7 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
     handle: jlong,
 ) -> JString<'caller> {
     let stats = tunnel(handle).map(|t| t.stats().encode()).unwrap_or_default();
-    unowned
-        .with_env(|env| -> jni::errors::Result<JString<'caller>> { env.new_string(stats) })
-        .resolve::<ThrowRuntimeExAndDefault>()
+    unowned.with_env(|env| -> jni::errors::Result<JString<'caller>> { env.new_string(stats) }).resolve::<ThrowRuntimeExAndDefault>()
 }
 
 #[unsafe(no_mangle)]
@@ -348,7 +341,10 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
                 let lookup = JavaOwnerLookup { vm: env.get_java_vm()?, class: env.new_global_ref(class)? };
                 if t.set_owner_lookup(lookup).is_err() {
                     // Reaches Kotlin as an exception once this call returns.
-                    env.throw_new(jni::jni_str!("java/lang/IllegalStateException"), jni::jni_str!("No se pudo iniciar el bloqueo de apps"))?;
+                    env.throw_new(
+                        jni::jni_str!("java/lang/IllegalStateException"),
+                        jni::jni_str!("No se pudo iniciar el bloqueo de apps"),
+                    )?;
                     return Ok(());
                 }
             }

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Every warning fails the build (warningsAsErrors). Each exception here says why it is deliberate. -->
+<lint>
+    <!-- targetSdk 37 changes app behaviour on Android 17; it is raised once tested on a device (phase 6). -->
+    <issue id="OldTargetApi" severity="ignore" />
+    <!-- The TV launcher banner is 320x180 dp by specification. -->
+    <issue id="VectorRaster">
+        <ignore path="src/main/res/drawable/banner.xml" />
+    </issue>
+    <!-- No 32-bit x86 Android TV hardware exists; arm64, arm and x86_64 are shipped. -->
+    <issue id="ChromeOsAbiSupport" severity="ignore" />
+    <!-- System.load is only used by JVM unit tests, to load the host build of the core. -->
+    <issue id="UnsafeDynamicallyLoadedCode">
+        <ignore path="src/main/java/com/reiniertutoriales/nfdnsvpn/core/NativeCore.kt" />
+    </issue>
+</lint>

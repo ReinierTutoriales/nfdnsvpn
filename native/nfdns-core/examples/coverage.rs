@@ -24,7 +24,12 @@ fn main() {
         if let Some(name) = label.strip_prefix("allow:") {
             println!("{name}: {}/{total} blocked by mistake {:?}", blocked.len(), blocked);
         } else {
-            println!("{label}: {}/{total} blocked ({:.0}%); missed {:?}", blocked.len(), 100.0 * blocked.len() as f64 / total as f64, passed);
+            println!(
+                "{label}: {}/{total} blocked ({:.0}%); missed {:?}",
+                blocked.len(),
+                100.0 * blocked.len() as f64 / total as f64,
+                passed
+            );
         }
     }
 }

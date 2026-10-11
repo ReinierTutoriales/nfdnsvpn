@@ -8,7 +8,7 @@
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
 use tokio::sync::oneshot;
