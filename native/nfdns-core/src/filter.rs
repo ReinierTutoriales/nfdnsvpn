@@ -12,13 +12,15 @@ pub struct DomainSet {
 }
 
 impl DomainSet {
-    fn from_domains(mut domains: Vec<String>) -> Self {
-        domains.sort_unstable();
-        domains.dedup();
-        let mut data = Vec::with_capacity(domains.iter().map(String::len).sum());
-        let mut ends = Vec::with_capacity(domains.len());
-        for domain in domains {
-            data.extend_from_slice(domain.as_bytes());
+    fn from_collector(collector: Collector) -> Self {
+        let Collector { data: raw, mut spans } = collector;
+        let text = |&(start, length): &(u32, u32)| &raw[start as usize..(start + length) as usize];
+        spans.sort_unstable_by(|a, b| text(a).cmp(text(b)));
+        spans.dedup_by(|a, b| text(a) == text(b));
+        let mut data = Vec::with_capacity(spans.iter().map(|&(_, length)| length as usize).sum());
+        let mut ends = Vec::with_capacity(spans.len());
+        for span in &spans {
+            data.extend_from_slice(text(span));
             ends.push(data.len() as u32);
         }
         DomainSet { data, ends }
@@ -98,12 +100,27 @@ impl Filter {
     }
 }
 
+/// Domains as they are parsed, packed in one buffer: about 8 bytes of overhead per domain instead
+/// of the ~40 of a `String`, which keeps the build peak low on a 2 GB TV.
+#[derive(Default)]
+struct Collector {
+    data: Vec<u8>,
+    spans: Vec<(u32, u32)>,
+}
+
+impl Collector {
+    fn push(&mut self, domain: &str) {
+        self.spans.push((self.data.len() as u32, domain.len() as u32));
+        self.data.extend_from_slice(domain.as_bytes());
+    }
+}
+
 #[derive(Default)]
 pub struct FilterBuilder {
-    block_suffix: Vec<String>,
-    block_exact: Vec<String>,
-    allow_suffix: Vec<String>,
-    allow_exact: Vec<String>,
+    block_suffix: Collector,
+    block_exact: Collector,
+    allow_suffix: Collector,
+    allow_exact: Collector,
 }
 
 enum Rule {
@@ -117,23 +134,42 @@ impl FilterBuilder {
     /// Accepts adblock (`||domain^`), hosts (`0.0.0.0 domain`) and one-domain-per-line lists.
     pub fn add_list(&mut self, text: &str) {
         for line in text.lines() {
-            for rule in parse_line(line) {
-                match rule {
-                    Rule::BlockSuffix(d) => self.block_suffix.push(d),
-                    Rule::BlockExact(d) => self.block_exact.push(d),
-                    Rule::AllowSuffix(d) => self.allow_suffix.push(d),
-                    Rule::AllowExact(d) => self.allow_exact.push(d),
-                }
+            self.add_line(line);
+        }
+    }
+
+    /// Same as [`FilterBuilder::add_list`], reading line by line: the list text is never held
+    /// in memory as a whole. Lines that are not valid UTF-8 are skipped.
+    pub fn add_reader<R: std::io::BufRead>(&mut self, mut reader: R) -> std::io::Result<()> {
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            if reader.read_until(b'\n', &mut line)? == 0 {
+                return Ok(());
+            }
+            if let Ok(text) = std::str::from_utf8(&line) {
+                self.add_line(text);
+            }
+        }
+    }
+
+    fn add_line(&mut self, line: &str) {
+        for rule in parse_line(line) {
+            match rule {
+                Rule::BlockSuffix(d) => self.block_suffix.push(&d),
+                Rule::BlockExact(d) => self.block_exact.push(&d),
+                Rule::AllowSuffix(d) => self.allow_suffix.push(&d),
+                Rule::AllowExact(d) => self.allow_exact.push(&d),
             }
         }
     }
 
     pub fn build(self) -> Filter {
         Filter {
-            block_suffix: DomainSet::from_domains(self.block_suffix),
-            block_exact: DomainSet::from_domains(self.block_exact),
-            allow_suffix: DomainSet::from_domains(self.allow_suffix),
-            allow_exact: DomainSet::from_domains(self.allow_exact),
+            block_suffix: DomainSet::from_collector(self.block_suffix),
+            block_exact: DomainSet::from_collector(self.block_exact),
+            allow_suffix: DomainSet::from_collector(self.allow_suffix),
+            allow_exact: DomainSet::from_collector(self.allow_exact),
         }
     }
 }
@@ -274,6 +310,22 @@ mod tests {
     fn normalizes_case_and_trailing_dot() {
         let f = filter("||Ads.Example.COM.^\n");
         assert!(f.is_blocked("ads.example.com"));
+    }
+
+    #[test]
+    fn reading_line_by_line_matches_reading_the_whole_text() {
+        let list = "! comment\n||a.example^\r\n0.0.0.0 b.example\nc.example\n@@||ok.a.example^\n||d.example^";
+        let mut builder = FilterBuilder::default();
+        builder.add_reader(std::io::Cursor::new(list.as_bytes())).unwrap();
+        let mut invalid = b"||e.example^\n".to_vec();
+        invalid.extend_from_slice(&[0xFF, 0xFE, b'\n']);
+        invalid.extend_from_slice(b"||f.example^\n");
+        builder.add_reader(std::io::Cursor::new(invalid)).unwrap();
+        let f = builder.build();
+        assert_eq!(f.rule_count(), 6);
+        assert!(f.is_blocked("x.a.example") && f.is_blocked("b.example") && f.is_blocked("d.example"));
+        assert!(!f.is_blocked("ok.a.example"));
+        assert!(f.is_blocked("f.example"));
     }
 
     #[test]

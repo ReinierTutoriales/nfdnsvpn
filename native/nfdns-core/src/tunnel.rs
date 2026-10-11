@@ -40,6 +40,9 @@ const UDP_IDLE: Duration = Duration::from_secs(120);
 const STACK_TCP_BUFFER: u32 = 32 * 1024;
 const RELAY_BUFFER: usize = 16 * 1024;
 const RECENT_LIMIT: usize = 30;
+/// Receive buffer of each UDP flow. Real datagrams stay within the path MTU (~1500 bytes), so
+/// 16 KiB is ample, and 50 QUIC flows cost 0.8 MB instead of 3.2 MB with 64 KiB buffers.
+const UDP_FLOW_BUFFER: usize = 16 * 1024;
 /// Once one direction of a TCP relay has ended, how long the other may still run. Bounds every
 /// relay task: netstack-smoltcp sometimes never reports a finished close (seen with bursts of
 /// short connections), which would otherwise keep the task and its buffers forever.
@@ -561,7 +564,7 @@ async fn udp_flow(local: SocketAddr, remote: SocketAddr, mut from_app: mpsc::Rec
     for datagram in held {
         let _ = socket.send(&datagram).await;
     }
-    let mut buffer = vec![0u8; MAX_PACKET];
+    let mut buffer = vec![0u8; UDP_FLOW_BUFFER];
     loop {
         tokio::select! {
             message = from_app.recv() => match message {

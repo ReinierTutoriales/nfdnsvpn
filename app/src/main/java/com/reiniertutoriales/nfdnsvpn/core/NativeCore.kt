@@ -15,6 +15,16 @@ object NativeCore {
     /** Compiles the lists into a filter; free it with [nativeDestroy] or hand it to [nativeTunnelCreate]. */
     @JvmStatic external fun nativeCreate(lists: Array<String>): Long
     @JvmStatic external fun nativeDestroy(handle: Long)
+
+    /** Filter built list by list from files on disk: no list text goes through Java memory. */
+    @JvmStatic external fun nativeBuilderNew(): Long
+    /** Reads a list file line by line; false if it cannot be read. */
+    @JvmStatic external fun nativeBuilderAddFile(builder: Long, path: String): Boolean
+    /** For small inputs only (the bundled list, the allowlist). */
+    @JvmStatic external fun nativeBuilderAddText(builder: Long, text: String)
+    /** Consumes the builder; returns a filter handle like [nativeCreate]. */
+    @JvmStatic external fun nativeBuilderBuild(builder: Long): Long
+    @JvmStatic external fun nativeBuilderDestroy(builder: Long)
     @JvmStatic external fun nativeRuleCount(handle: Long): Int
 
     /** Takes ownership of [filter]. [intercepted]: comma-separated resolver addresses. */

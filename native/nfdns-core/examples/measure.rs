@@ -3,11 +3,15 @@
 use nfdns::filter::FilterBuilder;
 use std::time::Instant;
 
-fn rss_kb() -> u64 {
+fn status_kb(field: &str) -> u64 {
     std::fs::read_to_string("/proc/self/status").ok()
-        .and_then(|s| s.lines().find(|l| l.starts_with("VmRSS:"))
+        .and_then(|s| s.lines().find(|l| l.starts_with(field))
             .and_then(|l| l.split_whitespace().nth(1)?.parse().ok()))
         .unwrap_or(0)
+}
+
+fn rss_kb() -> u64 {
+    status_kb("VmRSS:")
 }
 
 fn main() {
@@ -15,7 +19,8 @@ fn main() {
     let start = Instant::now();
     let mut builder = FilterBuilder::default();
     for path in std::env::args().skip(1) {
-        builder.add_list(&std::fs::read_to_string(&path).expect("list"));
+        // As the app does it: straight from the file, line by line.
+        builder.add_reader(std::io::BufReader::new(std::fs::File::open(&path).expect("list"))).expect("read");
     }
     let filter = builder.build();
     let built = start.elapsed();
@@ -26,6 +31,9 @@ fn main() {
         blocked += filter.is_blocked(names[i % names.len()]) as u32;
     }
     let lookup = start.elapsed() / 1_000_000;
-    println!("rules={} filter={} KB build={:?} rss_delta={} KB lookup={:?} blocked={}", filter.rule_count(), filter.memory_bytes() / 1024, built, rss_kb() - before, lookup, blocked);
+    println!(
+        "rules={} filter={} KB build={:?} rss_delta={} KB peak_delta={} KB lookup={:?} blocked={}",
+        filter.rule_count(), filter.memory_bytes() / 1024, built, rss_kb() - before, status_kb("VmHWM:") - before, lookup, blocked,
+    );
     for n in names { println!("  {n}: {}", filter.is_blocked(n)); }
 }

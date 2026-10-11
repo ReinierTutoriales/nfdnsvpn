@@ -61,7 +61,6 @@ class ShieldVpnService : VpnService() {
         /** Resolver addresses whose non-DNS traffic (DoH, QUIC) is refused by the core. */
         private val INTERCEPTED = listOf(DNS_V4, DNS_V6) + PUBLIC_RESOLVERS_V4 + PUBLIC_RESOLVERS_V6
 
-        private const val STATS_INTERVAL_MS = 1000L
         /** How often due lists are looked for; each list is still downloaded at most once a day. */
         private const val LIST_CHECK_HOURS = 6L
 
@@ -86,7 +85,7 @@ class ShieldVpnService : VpnService() {
 
     @Volatile private var stopping = false
     @Volatile private var tunnel: NativeTunnel? = null
-    /** Stats polling and filter rebuilds, one at a time, for the running tunnel. */
+    /** Daily list checks and filter rebuilds, one at a time, for the running tunnel. */
     @Volatile private var maintenance: ScheduledExecutorService? = null
     private var worker: Thread? = null
 
@@ -178,7 +177,6 @@ class ShieldVpnService : VpnService() {
         ShieldState.phase = ShieldState.Phase.STARTING
         ShieldState.fullTunnel = fullTunnel
         ShieldState.error = null
-        ShieldState.stats = null
         var filter = 0L
         var tun: ParcelFileDescriptor? = null
         var upstream: UpstreamDns? = null
@@ -197,10 +195,10 @@ class ShieldVpnService : VpnService() {
             current = NativeTunnel(filter, tun.fd, INTERCEPTED).also { filter = 0L }
             // Published before the first push, so a network change in between is not lost.
             tunnel = current
+            ShieldState.tunnel = current
             current.setUpstream(servers.get())
             if (stopping) return
             jobs = Executors.newSingleThreadScheduledExecutor().apply {
-                scheduleWithFixedDelay({ ShieldState.stats = current.stats() }, 0, STATS_INTERVAL_MS, TimeUnit.MILLISECONDS)
                 scheduleWithFixedDelay(::refreshDueLists, LIST_CHECK_HOURS, LIST_CHECK_HOURS, TimeUnit.HOURS)
             }
             maintenance = jobs
@@ -214,6 +212,7 @@ class ShieldVpnService : VpnService() {
             }
         } finally {
             maintenance = null
+            ShieldState.tunnel = null
             jobs?.shutdownNow()
             // A rebuild in progress hands its filter to the tunnel or frees it (NativeTunnel.setFilter).
             runCatching { jobs?.awaitTermination(10, TimeUnit.SECONDS) }
@@ -242,14 +241,23 @@ class ShieldVpnService : VpnService() {
         }
     }
 
-    /** Separate frame so the list text (~17 MB as UTF-16) is collectable once compiled. */
+    /** Compiles the enabled lists straight from their files; returns a filter handle. */
     private fun loadFilter(): Long {
-        val lists = ListRepository(this).load(
-            ShieldSettings.enabledLists(this),
-            ShieldSettings.allowlistRules(ShieldSettings.allowedDomains(this)),
-        )
+        val repository = ListRepository(this)
+        val lists = repository.load(ShieldSettings.enabledLists(this))
         ShieldState.lists = lists.status
-        val handle = NativeCore.nativeCreate(lists.texts.toTypedArray())
+        val builder = NativeCore.nativeBuilderNew()
+        try {
+            NativeCore.nativeBuilderAddText(builder, repository.bundledRules())
+            NativeCore.nativeBuilderAddText(builder, ShieldSettings.allowlistRules(ShieldSettings.allowedDomains(this)))
+            for (file in lists.files) {
+                if (!NativeCore.nativeBuilderAddFile(builder, file.absolutePath)) Log.w(TAG, "Unreadable list ${file.name}")
+            }
+        } catch (e: RuntimeException) {
+            NativeCore.nativeBuilderDestroy(builder)
+            throw e
+        }
+        val handle = NativeCore.nativeBuilderBuild(builder)
         ShieldState.rules = NativeCore.nativeRuleCount(handle)
         return handle
     }

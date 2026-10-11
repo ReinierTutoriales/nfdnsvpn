@@ -87,6 +87,7 @@ instaladas sin depender de ningún navegador.
 | HaGeZi Encrypted DNS (servidores DoH/DoQ) | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt` | Sí (fase 3) |
 | OISD small | `https://small.oisd.nl/` | No (opcional en Ajustes) |
 | OISD big | `https://big.oisd.nl/` | No (opcional en Ajustes) |
+| uBlock Origin: filters, privacy, badware (solo sus reglas de dominio) | `https://ublockorigin.github.io/uAssets/filters/{filters,privacy,badware}.txt` | No (opcional en Ajustes): +240 dominios sobre las de por defecto |
 | Anuncios de vídeo (propia) | `app/src/main/assets/video-ads.txt` | Sí |
 
 Solo se usan las reglas de dominio: `||dominio^` (incluye subdominios), `@@||dominio^`
@@ -231,3 +232,14 @@ Es la prueba en el dispositivo, sin código nuevo previsto salvo ajustes que sal
    y "QUIC rechazado".
 4. Dejarla 24 h encendida: la RAM no debe crecer de forma continua.
 5. Reiniciar la TV y confirmar que la protección vuelve sola.
+
+## Refuerzo y optimización (tras la fase 5)
+
+| Cambio | Antes | Ahora |
+|---|---|---|
+| Listas de uBlock Origin (solo dominios), opción desactivada por defecto | — | +240 dominios, +5 KB de RAM (sus reglas de ruta, cosméticas y scriptlets solo sirven dentro de un navegador) |
+| Carga de listas | Texto completo de cada lista en memoria Java (~17 MB en UTF-16) y luego en Rust | Rust lee cada archivo línea a línea; Java nunca tiene una lista entera |
+| Construcción del filtro (3 listas, 304 017 dominios, PC) | Pico 32,8 MB, retenido después 23,9 MB | Pico 16,9 MB, retenido 7,1 MB |
+| Descarga de listas | Lista entera en memoria antes de guardarla | Línea a línea al disco, validando por el camino |
+| Contadores de la pantalla | Consultados cada segundo aunque nadie mire | Solo mientras la pantalla está visible: sin despertar la CPU en segundo plano |
+| Búfer por flujo UDP | 64 KiB (50 flujos QUIC: 3,2 MB) | 16 KiB (0,8 MB); los datagramas reales no pasan del MTU |

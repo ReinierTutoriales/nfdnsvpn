@@ -31,8 +31,11 @@ Lo que hacen ambos modos:
   bloqueados, estado de las listas, consumo de la app y aviso si el DNS privado del sistema se
   salta el filtro.
 - **Permitir un dominio** bloqueado eligiéndolo con el mando, sin teclear.
-- **Ajustes:** elegir listas (incluidas OISD small/big), quitar dominios permitidos, excluir apps
-  que fallen y activar la protección al encender la TV.
+- **Ajustes:** elegir listas (incluidas OISD small/big y las de uBlock Origin, de las que se usan
+  sus reglas de dominio), quitar dominios permitidos, excluir apps que fallen y activar la
+  protección al encender la TV.
+- Ligera: las listas se compilan leyendo los archivos línea a línea (pico de unos 17 MB al
+  compilar, 7 MB después) y nada se consulta en segundo plano mientras no miras la pantalla.
 - Las listas se actualizan solas una vez al día sin cortar las conexiones.
 
 ## Instalar en la TV

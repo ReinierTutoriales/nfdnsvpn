@@ -22,6 +22,25 @@ class NativeCoreTest {
     }
 
     @Test
+    fun buildsAFilterFromFilesAndText() {
+        val list = java.io.File.createTempFile("list", ".txt").apply {
+            writeText("||doubleclick.net^\n0.0.0.0 ads.example.com\n||ads.example.org^\n")
+            deleteOnExit()
+        }
+        val builder = NativeCore.nativeBuilderNew()
+        assertTrue(NativeCore.nativeBuilderAddFile(builder, list.absolutePath))
+        assertTrue(!NativeCore.nativeBuilderAddFile(builder, "/does/not/exist"))
+        NativeCore.nativeBuilderAddText(builder, "||tracker.example.net^\n@@||ads.example.org^\n")
+        val filter = NativeCore.nativeBuilderBuild(builder)
+        try {
+            assertEquals(4, NativeCore.nativeRuleCount(filter))
+        } finally {
+            NativeCore.nativeDestroy(filter)
+        }
+        NativeCore.nativeBuilderDestroy(NativeCore.nativeBuilderNew())
+    }
+
+    @Test
     fun tunnelLifecycleWithAnInvalidDescriptorFailsInsteadOfHanging() {
         val filter = NativeCore.nativeCreate(arrayOf("||doubleclick.net^\n"))
         val tunnel = NativeTunnel(filter, -1, listOf("10.111.0.1", "8.8.8.8", "not-an-ip"))

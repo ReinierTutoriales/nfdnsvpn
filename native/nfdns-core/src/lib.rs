@@ -16,7 +16,7 @@ pub mod tunnel;
 use filter::{Filter, FilterBuilder};
 use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JClass, JObjectArray, JString};
-use jni::sys::{jint, jlong};
+use jni::sys::{jboolean, jint, jlong};
 use jni::EnvUnowned;
 use std::net::{IpAddr, SocketAddr};
 use tunnel::Tunnel;
@@ -69,6 +69,86 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
             Ok(Box::into_raw(Box::new(builder.build())) as jlong)
         })
         .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// Starts a filter built list by list (see `nativeBuilderAddFile`), so no list text is ever
+/// held in Java memory. Finish with `nativeBuilderBuild` or free with `nativeBuilderDestroy`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeBuilderNew<'caller>(
+    _unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+) -> jlong {
+    Box::into_raw(Box::new(FilterBuilder::default())) as jlong
+}
+
+fn builder<'a>(handle: jlong) -> Option<&'a mut FilterBuilder> {
+    // SAFETY: builder handles come from `nativeBuilderNew` and are used by one thread at a time,
+    // until `nativeBuilderBuild` or `nativeBuilderDestroy` releases them.
+    (handle != 0).then(|| unsafe { &mut *(handle as *mut FilterBuilder) })
+}
+
+/// Reads a list file line by line; false if it cannot be read.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeBuilderAddFile<'caller>(
+    mut unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    path: JString<'caller>,
+) -> jboolean {
+    unowned
+        .with_env(|env| -> jni::errors::Result<jboolean> {
+            let path = path.try_to_string(env)?;
+            let Some(b) = builder(handle) else { return Ok(false) };
+            let added = std::fs::File::open(&path).and_then(|file| b.add_reader(std::io::BufReader::new(file)));
+            Ok(added.is_ok())
+        })
+        .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// Adds rules given as text (small inputs: the bundled list, the allowlist).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeBuilderAddText<'caller>(
+    mut unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    text: JString<'caller>,
+) {
+    unowned
+        .with_env(|env| -> jni::errors::Result<()> {
+            let text = text.try_to_string(env)?;
+            if let Some(b) = builder(handle) {
+                b.add_list(&text);
+            }
+            Ok(())
+        })
+        .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// Consumes the builder and returns a filter handle (as `nativeCreate`).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeBuilderBuild<'caller>(
+    _unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) -> jlong {
+    if handle == 0 {
+        return 0;
+    }
+    // SAFETY: see `builder`; ownership ends here.
+    let builder = *unsafe { Box::from_raw(handle as *mut FilterBuilder) };
+    Box::into_raw(Box::new(builder.build())) as jlong
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeBuilderDestroy<'caller>(
+    _unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) {
+    if handle != 0 {
+        // SAFETY: see `builder`.
+        drop(unsafe { Box::from_raw(handle as *mut FilterBuilder) });
+    }
 }
 
 #[unsafe(no_mangle)]

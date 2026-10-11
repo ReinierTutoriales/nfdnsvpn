@@ -93,7 +93,7 @@ class MainActivity : ComponentActivity() {
 
     /** Allowlists one of the recently blocked names, picked with the remote (no typing on a TV). */
     private fun onAllowDomain() {
-        val names = ShieldState.stats?.recent.orEmpty()
+        val names = ShieldState.stats()?.recent.orEmpty()
         if (names.isEmpty()) {
             AlertDialog.Builder(this).setMessage(R.string.allow_empty).setPositiveButton(android.R.string.ok, null).show()
             return
@@ -121,7 +121,7 @@ class MainActivity : ComponentActivity() {
             }
         )
         mode.setText(if (ShieldSettings.isFullTunnel(this)) R.string.mode_full else R.string.mode_light)
-        val counters = ShieldState.stats
+        val counters = ShieldState.stats()
         val lines = mutableListOf(getString(R.string.stats, ShieldState.rules, counters?.queries ?: 0L, counters?.blocked ?: 0L))
         if (phase == ShieldState.Phase.RUNNING && ShieldState.fullTunnel && counters != null) {
             lines += getString(R.string.stats_connections, counters.tcp, counters.udp, counters.quicRefused)

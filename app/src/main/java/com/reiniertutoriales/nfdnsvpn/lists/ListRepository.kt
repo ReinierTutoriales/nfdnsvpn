@@ -7,16 +7,24 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** A remote DNS blocklist in adblock syntax (`||domain^`). */
-data class BlockList(val id: String, val name: String, val url: String, val enabledByDefault: Boolean)
+/** A DNS blocklist in adblock syntax (`||domain^`), downloaded from one or more files. */
+data class BlockList(val id: String, val name: String, val urls: List<String>, val enabledByDefault: Boolean) {
+    constructor(id: String, name: String, url: String, enabledByDefault: Boolean) : this(id, name, listOf(url), enabledByDefault)
+
+    /** One saved file per URL. */
+    fun sources(): List<Pair<String, String>> =
+        if (urls.size == 1) listOf(id to urls[0]) else urls.mapIndexed { index, url -> "$id-$index" to url }
+}
 
 data class ListStatus(val name: String, val available: Boolean, val updatedAt: Long, val error: String?)
 
-class LoadedLists(val texts: List<String>, val status: List<ListStatus>)
+/** Saved list files to compile (read by the core straight from disk), and their status. */
+class LoadedLists(val files: List<File>, val status: List<ListStatus>)
 
 /**
  * Keeps a copy of each list on disk and refreshes it at most once a day with a conditional
  * request. A failed download never removes protection: the previous copy stays in use.
+ * Lists are streamed to disk and to the core: no list is ever held in memory as a whole.
  */
 class ListRepository(private val context: Context) {
     companion object {
@@ -29,12 +37,26 @@ class ListRepository(private val context: Context) {
             // Optional: mostly overlap with the defaults; big costs about 5 MB more RAM.
             BlockList("oisd-small", "OISD small", "https://small.oisd.nl/", false),
             BlockList("oisd-big", "OISD big", "https://big.oisd.nl/", false),
+            // uBlock Origin's own lists. Only their plain domain rules apply outside a browser
+            // (paths, cosmetic filters and scriptlets need the page): about 240 domains beyond
+            // the defaults, measured 2026-10.
+            BlockList(
+                "ublock", "uBlock Origin (solo dominios)",
+                listOf(
+                    "https://ublockorigin.github.io/uAssets/filters/filters.txt",
+                    "https://ublockorigin.github.io/uAssets/filters/privacy.txt",
+                    "https://ublockorigin.github.io/uAssets/filters/badware.txt",
+                ),
+                false,
+            ),
         )
 
         fun selected(enabledIds: Set<String>) = ALL_LISTS.filter { it.id in enabledIds }
+
         const val BUNDLED_ASSET = "video-ads.txt"
         private const val MAX_AGE_MS = 24 * 60 * 60 * 1000L
-        private const val MAX_TEXT_CHARS = 16 * 1024 * 1024
+        private const val MAX_TEXT_CHARS = 16L * 1024 * 1024
+        /** A list with fewer domain rules is an error page or a truncated download. */
         private const val MIN_RULES = 100
     }
 
@@ -42,76 +64,86 @@ class ListRepository(private val context: Context) {
     private val prefs = context.getSharedPreferences("lists", Context.MODE_PRIVATE)
 
     /** True when one of the enabled lists is missing or older than a day. */
-    fun isDue(enabledIds: Set<String>) = selected(enabledIds).any { isDue(it) }
+    fun isDue(enabledIds: Set<String>) = selected(enabledIds).flatMap { it.sources() }.any { (key, _) -> isDue(key) }
 
-    private fun isDue(list: BlockList) =
-        !File(dir, "${list.id}.txt").exists() || System.currentTimeMillis() - fetchedAt(list) > MAX_AGE_MS
+    private fun file(key: String) = File(dir, "$key.txt")
 
-    /** Enabled lists (refreshed when due), the bundled video ad list and [extraRules] (allowlist). */
-    fun load(enabledIds: Set<String>, extraRules: String): LoadedLists {
-        val texts = mutableListOf(context.assets.open(BUNDLED_ASSET).bufferedReader().use { it.readText() }, extraRules)
+    private fun isDue(key: String) = !file(key).exists() || System.currentTimeMillis() - prefs.getLong("$key.fetchedAt", 0L) > MAX_AGE_MS
+
+    /** Enabled lists, refreshed when due. */
+    fun load(enabledIds: Set<String>): LoadedLists {
+        val files = mutableListOf<File>()
         val status = mutableListOf<ListStatus>()
         for (list in selected(enabledIds)) {
-            val file = File(dir, "${list.id}.txt")
             var error: String? = null
-            if (isDue(list)) {
-                error = try {
-                    refresh(list, file)
-                    null
-                } catch (e: IOException) {
-                    e.message ?: e.javaClass.simpleName
+            var updatedAt = Long.MAX_VALUE
+            var available = false
+            for ((key, url) in list.sources()) {
+                if (isDue(key)) {
+                    try {
+                        refresh(key, url)
+                    } catch (e: IOException) {
+                        error = error ?: (e.message ?: e.javaClass.simpleName)
+                    }
+                }
+                val file = file(key)
+                if (file.exists()) {
+                    files += file
+                    available = true
+                    updatedAt = minOf(updatedAt, file.lastModified())
                 }
             }
-            val available = file.exists()
-            if (available) texts += file.readText()
-            status += ListStatus(list.name, available, if (available) file.lastModified() else 0L, error)
+            status += ListStatus(list.name, available, if (available) updatedAt else 0L, error)
         }
-        return LoadedLists(texts, status)
+        return LoadedLists(files, status)
     }
 
-    private fun fetchedAt(list: BlockList) = prefs.getLong("${list.id}.fetchedAt", 0L)
+    fun bundledRules(): String = context.assets.open(BUNDLED_ASSET).bufferedReader().use { it.readText() }
 
-    private fun refresh(list: BlockList, file: File) {
-        val connection = URL(list.url).openConnection() as HttpURLConnection
+    private fun refresh(key: String, url: String) {
+        val target = file(key)
+        val connection = URL(url).openConnection() as HttpURLConnection
         connection.connectTimeout = 10_000
         connection.readTimeout = 20_000
         connection.useCaches = false
         connection.setRequestProperty("User-Agent", "nfdnsvpn/1.0 (filter list updater)")
         // No Accept-Encoding: HttpURLConnection then asks for gzip and decompresses it itself.
-        if (file.exists()) {
-            prefs.getString("${list.id}.etag", null)?.let { connection.setRequestProperty("If-None-Match", it) }
-            prefs.getString("${list.id}.lastModified", null)?.let { connection.setRequestProperty("If-Modified-Since", it) }
+        if (target.exists()) {
+            prefs.getString("$key.etag", null)?.let { connection.setRequestProperty("If-None-Match", it) }
+            prefs.getString("$key.lastModified", null)?.let { connection.setRequestProperty("If-Modified-Since", it) }
         }
+        val partial = File(dir, "$key.txt.part")
         try {
             val code = connection.responseCode
-            if (code == HttpURLConnection.HTTP_NOT_MODIFIED && file.exists()) {
-                prefs.edit { putLong("${list.id}.fetchedAt", System.currentTimeMillis()) }
+            if (code == HttpURLConnection.HTTP_NOT_MODIFIED && target.exists()) {
+                prefs.edit { putLong("$key.fetchedAt", System.currentTimeMillis()) }
                 return
             }
             if (code !in 200..299) throw IOException("HTTP $code")
-            val text = connection.inputStream.bufferedReader().use { reader ->
-                val out = StringBuilder()
-                val buffer = CharArray(64 * 1024)
-                while (true) {
-                    val read = reader.read(buffer)
-                    if (read < 0) break
-                    out.appendRange(buffer, 0, read)
-                    if (out.length > MAX_TEXT_CHARS) throw IOException("Lista demasiado grande")
+            // Line by line to disk, validating on the way: memory use is one line, not one list.
+            var characters = 0L
+            var rules = 0
+            connection.inputStream.bufferedReader().use { reader ->
+                partial.bufferedWriter().use { writer ->
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        characters += line.length + 1
+                        if (characters > MAX_TEXT_CHARS) throw IOException("Lista demasiado grande")
+                        if (line.startsWith("||")) rules++
+                        writer.write(line)
+                        writer.write('\n'.code)
+                    }
                 }
-                out.toString()
             }
-            if (text.lineSequence().count { it.startsWith("||") } < MIN_RULES) {
-                throw IOException("El servidor no devolvió una lista válida")
-            }
-            val partial = File(dir, "${list.id}.txt.part")
-            partial.writeText(text)
-            if (!partial.renameTo(file)) throw IOException("No se pudo guardar la lista")
+            if (rules < MIN_RULES) throw IOException("El servidor no devolvió una lista válida")
+            if (!partial.renameTo(target)) throw IOException("No se pudo guardar la lista")
             prefs.edit {
-                putLong("${list.id}.fetchedAt", System.currentTimeMillis())
-                putString("${list.id}.etag", connection.getHeaderField("ETag"))
-                putString("${list.id}.lastModified", connection.getHeaderField("Last-Modified"))
+                putLong("$key.fetchedAt", System.currentTimeMillis())
+                putString("$key.etag", connection.getHeaderField("ETag"))
+                putString("$key.lastModified", connection.getHeaderField("Last-Modified"))
             }
         } finally {
+            partial.delete()
             connection.disconnect()
         }
     }
