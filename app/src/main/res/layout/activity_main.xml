@@ -57,6 +57,41 @@
             android:textColor="@color/button_text"
             android:textSize="16sp" />
 
+        <LinearLayout
+            style="?android:attr/buttonBarStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/allow"
+                style="?android:attr/buttonBarButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/button_toggle"
+                android:paddingHorizontal="20dp"
+                android:paddingVertical="10dp"
+                android:text="@string/action_allow"
+                android:textAllCaps="false"
+                android:textColor="@color/button_text"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/settings"
+                style="?android:attr/buttonBarButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:background="@drawable/button_toggle"
+                android:paddingHorizontal="20dp"
+                android:paddingVertical="10dp"
+                android:text="@string/action_settings"
+                android:textAllCaps="false"
+                android:textColor="@color/button_text"
+                android:textSize="16sp" />
+        </LinearLayout>
+
         <TextView
             android:id="@+id/stats"
             android:layout_width="wrap_content"

@@ -19,7 +19,7 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -131,9 +131,19 @@ impl AsRawFd for TunFd {
     }
 }
 
+/// The filter in use, replaceable while the tunnel runs (daily list updates keep connections).
+#[derive(Clone)]
+struct SharedFilter(Arc<RwLock<Arc<Filter>>>);
+
+impl SharedFilter {
+    fn current(&self) -> Arc<Filter> {
+        self.0.read().unwrap().clone()
+    }
+}
+
 pub struct Tunnel {
     fd: RawFd,
-    filter: Arc<Filter>,
+    filter: SharedFilter,
     intercepted: Arc<Vec<IpAddr>>,
     upstream: Arc<Mutex<Vec<SocketAddr>>>,
     stats: Arc<Stats>,
@@ -146,12 +156,23 @@ impl Tunnel {
     pub fn new(fd: RawFd, filter: Filter, intercepted: Vec<IpAddr>) -> Self {
         Tunnel {
             fd,
-            filter: Arc::new(filter),
+            filter: SharedFilter(Arc::new(RwLock::new(Arc::new(filter)))),
             intercepted: Arc::new(intercepted),
             upstream: Arc::new(Mutex::new(Vec::new())),
             stats: Arc::new(Stats::default()),
             stop: Notify::new(),
         }
+    }
+
+    /// Replaces the filter; new queries and connections use it at once, flows already relayed
+    /// keep going. May be called at any time from any thread.
+    pub fn set_filter(&self, filter: Filter) {
+        *self.filter.0.write().unwrap() = Arc::new(filter);
+    }
+
+    /// Rules of the filter in use.
+    pub fn rule_count(&self) -> usize {
+        self.filter.current().rule_count()
     }
 
     /// Resolvers of the real network; may be called at any time from any thread.
@@ -223,7 +244,7 @@ impl Tunnel {
         loop {
             let length = read_packet(&tun, &mut buffer).await?;
             let data = &buffer[..length];
-            match classify(&self.filter, &self.intercepted, data) {
+            match classify(&self.filter.current(), &self.intercepted, data) {
                 Verdict::Drop => {}
                 Verdict::Reply { packet, blocked } => {
                     if let Some(name) = blocked {
@@ -234,7 +255,7 @@ impl Tunnel {
                 Verdict::Forward { query, .. } => {
                     self.stats.queries.fetch_add(1, Ordering::Relaxed);
                     let servers = self.upstream.lock().unwrap().clone();
-                    tokio::spawn(forward_dns(data.to_vec(), query, servers, to_tun.clone(), self.filter.clone(), self.stats.clone()));
+                    tokio::spawn(forward_dns(data.to_vec(), query, servers, to_tun.clone(), self.filter.current(), self.stats.clone()));
                 }
                 Verdict::Stack => {
                     if let Err(e) = stack_sink.send(data.to_vec()).await {
@@ -343,9 +364,9 @@ async fn forward_dns(
     }
 }
 
-async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: Arc<Filter>, stats: Arc<Stats>) {
+async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: SharedFilter, stats: Arc<Stats>) {
     while let Some((mut inbound, _local, remote)) = listener.next().await {
-        let (filter, stats) = (filter.clone(), stats.clone());
+        let (filter, stats) = (filter.current(), stats.clone());
         tokio::spawn(async move {
             let _active = Active::new(&stats.tcp_active);
             // Connect while the app sends its first bytes, so inspection adds no round trip.
@@ -428,7 +449,7 @@ async fn pipe<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(mut reader: R, mut wr
 
 /// UDP "NAT": one connected socket per (app address, destination) flow, closed after
 /// [`UDP_IDLE`] without traffic in either direction.
-async fn relay_udp(udp: netstack_smoltcp::UdpSocket, filter: Arc<Filter>, stats: Arc<Stats>) {
+async fn relay_udp(udp: netstack_smoltcp::UdpSocket, filter: SharedFilter, stats: Arc<Stats>) {
     let (mut inbound, mut outbound) = udp.split();
     let (replies, mut pending) = mpsc::channel::<UdpMsg>(512);
     tokio::spawn(async move {
@@ -461,7 +482,7 @@ async fn relay_udp(udp: netstack_smoltcp::UdpSocket, filter: Arc<Filter>, stats:
 /// What every UDP flow needs: the way back to the stack, the filter and the counters.
 struct UdpContext {
     replies: mpsc::Sender<UdpMsg>,
-    filter: Arc<Filter>,
+    filter: SharedFilter,
     stats: Arc<Stats>,
 }
 
@@ -515,7 +536,7 @@ async fn udp_flow(local: SocketAddr, remote: SocketAddr, mut from_app: mpsc::Rec
     let stats = &context.stats;
     let _active = Active::new(&stats.udp_active);
     let held = if remote.port() == QUIC_PORT {
-        match inspect_quic(&mut from_app, &context.filter).await {
+        match inspect_quic(&mut from_app, &context.filter.current()).await {
             QuicDecision::Allow(held) => held,
             QuicDecision::Block(name) => {
                 stats.blocked.fetch_add(1, Ordering::Relaxed);
@@ -661,6 +682,26 @@ mod tests {
         let reply = packet::parse(&echoed).unwrap();
         assert_eq!((reply.src, reply.src_port, reply.dst, reply.dst_port), (ip("127.0.0.1"), echo_port, client, 41000));
         assert_eq!(reply.payload, b"ping over the tunnel");
+        tunnel.stop();
+    }
+
+    #[test]
+    fn a_new_filter_applies_without_restarting() {
+        let (app, tun) = fake_tun();
+        let tunnel = start(&tun);
+        let client = ip("10.111.0.2");
+        let blocked = |app: &OwnedFd, id: u16, name: &str| {
+            send(app, &udp_packet(client, ip("10.111.0.1"), 40000 + id, 53, &build_query(id, name, TYPE_A)));
+            let reply = receive(app);
+            let reply = packet::parse(&reply).unwrap();
+            reply.payload[reply.payload.len() - 4..] == [0, 0, 0, 0]
+        };
+        assert!(blocked(&app, 1, "ads.doubleclick.net"));
+        let mut builder = FilterBuilder::default();
+        builder.add_list("||newtracker.example^\n");
+        tunnel.set_filter(builder.build());
+        assert_eq!(tunnel.rule_count(), 1);
+        assert!(blocked(&app, 2, "pixel.newtracker.example"));
         tunnel.stop();
     }
 

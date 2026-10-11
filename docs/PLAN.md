@@ -85,7 +85,8 @@ instaladas sin depender de ningún navegador.
 | AdGuard DNS filter | `https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt` | Sí |
 | HaGeZi Multi Pro | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt` | Sí |
 | HaGeZi Encrypted DNS (servidores DoH/DoQ) | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt` | Sí (fase 3) |
-| OISD small | `https://small.oisd.nl/` | No (fase 5) |
+| OISD small | `https://small.oisd.nl/` | No (opcional en Ajustes) |
+| OISD big | `https://big.oisd.nl/` | No (opcional en Ajustes) |
 | Anuncios de vídeo (propia) | `app/src/main/assets/video-ads.txt` | Sí |
 
 Solo se usan las reglas de dominio: `||dominio^` (incluye subdominios), `@@||dominio^`
@@ -204,3 +205,29 @@ contenedor de desarrollo no tiene IPv6 en el kernel).
 
 **Prueba:** `aioquic` como servidor y cliente a través del túnel: el SNI permitido completa el
 handshake; el bloqueado no recibe respuesta.
+
+## Fase 5: ajustes y uso diario
+
+**Estado:** hecho; compila y pasa tests y lint. La parte de Android (pantallas, arranque al
+encender, exclusiones) solo se puede probar en el dispositivo.
+
+| Función | Cómo |
+|---|---|
+| Elegir listas | Ajustes › Listas de bloqueo: AdGuard DNS, HaGeZi Pro, HaGeZi Encrypted DNS (activas por defecto), OISD small y OISD big (opcionales). La lista propia de vídeo siempre está activa |
+| Lista blanca sin teclado | "Permitir un dominio bloqueado" en la pantalla principal muestra los últimos bloqueados; se elige con el mando. Se aplica como `@@||dominio^` (también subdominios) y se quita en Ajustes |
+| Apps excluidas | Ajustes › Apps excluidas: lista de apps con icono en el lanzador; su tráfico no pasa por la VPN (`addDisallowedApplication`) |
+| Aplicar cambios | Listas y lista blanca: se cambia el filtro en caliente, sin cortar conexiones. Exclusiones: se reinicia el túnel (las rutas y apps se fijan al crearlo) |
+| Actualización diaria | Mientras la VPN está activa, cada 6 h se mira si alguna lista tiene más de un día; si es así, se descarga y el filtro nuevo sustituye al anterior sin reiniciar |
+| Arranque al encender | `BootReceiver` (también tras actualizar la app) arranca la protección si estaba activa al apagar y el permiso de VPN ya está concedido |
+| Medición (para la fase 6) | En pantalla, con la VPN activa: RAM (PSS) y CPU acumulada del proceso |
+
+## Fase 6: medición en la onn
+
+Es la prueba en el dispositivo, sin código nuevo previsto salvo ajustes que salgan de ella:
+
+1. Instalar el APK del último CI, activar la protección (modo ligero) y anotar RAM y CPU.
+2. Comprobar el bloqueo en apps con anuncios de AdMob o Unity y en el lanzador.
+3. Pasar a modo completo, reproducir 4K al menos 30 min y anotar RAM, CPU, conexiones activas
+   y "QUIC rechazado".
+4. Dejarla 24 h encendida: la RAM no debe crecer de forma continua.
+5. Reiniciar la TV y confirmar que la protección vuelve sola.

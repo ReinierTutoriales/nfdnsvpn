@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
@@ -12,6 +13,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import com.reiniertutoriales.nfdnsvpn.R
 import com.reiniertutoriales.nfdnsvpn.core.NativeCore
 import com.reiniertutoriales.nfdnsvpn.core.NativeTunnel
@@ -35,8 +37,10 @@ class ShieldVpnService : VpnService() {
         private const val TAG = "ShieldVpn"
         const val ACTION_START = "com.reiniertutoriales.nfdnsvpn.START"
         const val ACTION_STOP = "com.reiniertutoriales.nfdnsvpn.STOP"
-        /** Applies a mode change: stops the running tunnel and starts a new one. */
+        /** Applies a mode or app-exclusion change: stops the running tunnel and starts a new one. */
         const val ACTION_RESTART = "com.reiniertutoriales.nfdnsvpn.RESTART"
+        /** Applies a list or allowlist change without dropping connections. */
+        const val ACTION_RELOAD = "com.reiniertutoriales.nfdnsvpn.RELOAD"
         private const val CHANNEL = "shield"
         private const val NOTIFICATION_ID = 1
 
@@ -58,6 +62,8 @@ class ShieldVpnService : VpnService() {
         private val INTERCEPTED = listOf(DNS_V4, DNS_V6) + PUBLIC_RESOLVERS_V4 + PUBLIC_RESOLVERS_V6
 
         private const val STATS_INTERVAL_MS = 1000L
+        /** How often due lists are looked for; each list is still downloaded at most once a day. */
+        private const val LIST_CHECK_HOURS = 6L
 
         private val virtualAddresses = listOf(DNS_V4, DNS_V6, CLIENT_V4, CLIENT_V6).map(InetAddress::getByName)
 
@@ -66,25 +72,46 @@ class ShieldVpnService : VpnService() {
         fun start(context: Context) = send(context, ACTION_START)
         fun stop(context: Context) = send(context, ACTION_STOP)
         fun restart(context: Context) = send(context, ACTION_RESTART)
+        fun reload(context: Context) = send(context, ACTION_RELOAD)
 
         private fun send(context: Context, action: String) {
             context.startService(Intent(context, ShieldVpnService::class.java).setAction(action))
+        }
+
+        /** From the background (boot, app update): only a foreground service may start there. */
+        fun startFromBackground(context: Context) {
+            ContextCompat.startForegroundService(context, Intent(context, ShieldVpnService::class.java).setAction(ACTION_START))
         }
     }
 
     @Volatile private var stopping = false
     @Volatile private var tunnel: NativeTunnel? = null
+    /** Stats polling and filter rebuilds, one at a time, for the running tunnel. */
+    @Volatile private var maintenance: ScheduledExecutorService? = null
     private var worker: Thread? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                ShieldSettings.setWantRunning(this, false)
                 shutdown()
                 stopSelf()
                 return START_NOT_STICKY
             }
             ACTION_RESTART -> shutdown()
+            ACTION_RELOAD -> {
+                val jobs = maintenance
+                when {
+                    jobs != null -> jobs.execute(::reloadFilter)
+                    // Not running: the next start loads the current settings anyway. Do not leave
+                    // behind a service that this intent alone created.
+                    worker == null -> stopSelf(startId)
+                }
+                // The latest return value decides whether Android restarts a killed service.
+                return if (worker != null) START_STICKY else START_NOT_STICKY
+            }
         }
+        ShieldSettings.setWantRunning(this, true)
         // ACTION_START from the UI, or SERVICE_INTERFACE when Android starts an always-on VPN.
         promoteToForeground()
         if (worker == null) {
@@ -94,7 +121,9 @@ class ShieldVpnService : VpnService() {
         return START_STICKY
     }
 
+    /** Another VPN took over, or the user revoked consent: do not come back on the next boot. */
     override fun onRevoke() {
+        ShieldSettings.setWantRunning(this, false)
         shutdown()
         stopSelf()
     }
@@ -154,7 +183,7 @@ class ShieldVpnService : VpnService() {
         var tun: ParcelFileDescriptor? = null
         var upstream: UpstreamDns? = null
         var current: NativeTunnel? = null
-        var poller: ScheduledExecutorService? = null
+        var jobs: ScheduledExecutorService? = null
         try {
             filter = loadFilter()
             val servers = AtomicReference<List<String>>(emptyList())
@@ -170,9 +199,11 @@ class ShieldVpnService : VpnService() {
             tunnel = current
             current.setUpstream(servers.get())
             if (stopping) return
-            poller = Executors.newSingleThreadScheduledExecutor().apply {
+            jobs = Executors.newSingleThreadScheduledExecutor().apply {
                 scheduleWithFixedDelay({ ShieldState.stats = current.stats() }, 0, STATS_INTERVAL_MS, TimeUnit.MILLISECONDS)
+                scheduleWithFixedDelay(::refreshDueLists, LIST_CHECK_HOURS, LIST_CHECK_HOURS, TimeUnit.HOURS)
             }
+            maintenance = jobs
             ShieldState.phase = ShieldState.Phase.RUNNING
             val failure = current.run()
             if (failure.isNotEmpty() && !stopping) throw IOException(failure)
@@ -182,8 +213,10 @@ class ShieldVpnService : VpnService() {
                 ShieldState.error = e.message ?: e.javaClass.simpleName
             }
         } finally {
-            poller?.shutdownNow()
-            runCatching { poller?.awaitTermination(2, TimeUnit.SECONDS) }
+            maintenance = null
+            jobs?.shutdownNow()
+            // A rebuild in progress hands its filter to the tunnel or frees it (NativeTunnel.setFilter).
+            runCatching { jobs?.awaitTermination(10, TimeUnit.SECONDS) }
             tunnel = null
             // run() has returned (or never started), so nothing else uses the native tunnel.
             current?.close()
@@ -195,9 +228,26 @@ class ShieldVpnService : VpnService() {
         }
     }
 
+    private fun refreshDueLists() {
+        if (ListRepository(this).isDue(ShieldSettings.enabledLists(this))) reloadFilter()
+    }
+
+    /** Builds a filter from the current lists and settings and swaps it into the running tunnel. */
+    private fun reloadFilter() {
+        try {
+            val filter = loadFilter()
+            tunnel?.setFilter(filter) ?: NativeCore.nativeDestroy(filter)
+        } catch (e: Exception) {
+            Log.e(TAG, "Filter reload failed; the previous filter stays in use", e)
+        }
+    }
+
     /** Separate frame so the list text (~17 MB as UTF-16) is collectable once compiled. */
     private fun loadFilter(): Long {
-        val lists = ListRepository(this).load()
+        val lists = ListRepository(this).load(
+            ShieldSettings.enabledLists(this),
+            ShieldSettings.allowlistRules(ShieldSettings.allowedDomains(this)),
+        )
         ShieldState.lists = lists.status
         val handle = NativeCore.nativeCreate(lists.texts.toTypedArray())
         ShieldState.rules = NativeCore.nativeRuleCount(handle)
@@ -227,6 +277,13 @@ class ShieldVpnService : VpnService() {
         }
         // Our own list downloads, DNS forwarding and relay sockets must not loop back.
         builder.addDisallowedApplication(packageName)
+        for (app in ShieldSettings.excludedApps(this)) {
+            try {
+                builder.addDisallowedApplication(app)
+            } catch (e: PackageManager.NameNotFoundException) {
+                Log.i(TAG, "Excluded app $app is no longer installed")
+            }
+        }
         // VPNs are metered by default since Android 10, which makes streaming apps lower quality.
         if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
         return builder.establish()

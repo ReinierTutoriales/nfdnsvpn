@@ -19,6 +19,22 @@
     <string name="list_update_failed">no se pudo actualizar (%1$s)</string>
     <string name="recent_title">Últimos dominios bloqueados</string>
     <string name="recent_empty">Ninguno todavía</string>
+    <string name="action_allow">Permitir un dominio bloqueado</string>
+    <string name="action_settings">Ajustes</string>
+    <string name="allow_title">¿Qué dominio quieres permitir?</string>
+    <string name="allow_hint">Se permitirá también en sus subdominios. Puedes quitarlo en Ajustes.</string>
+    <string name="allow_empty">Todavía no hay dominios bloqueados.</string>
+    <string name="usage">Consumo de la app: %1$d MB de RAM · %2$d s de CPU</string>
+    <string name="settings_title">Ajustes</string>
+    <string name="settings_lists">Listas de bloqueo</string>
+    <string name="settings_lists_note">Se actualizan una vez al día. La lista propia de anuncios de vídeo siempre está activa.</string>
+    <string name="settings_startup">Inicio</string>
+    <string name="settings_start_on_boot">Activar la protección al encender la TV (si estaba activa)</string>
+    <string name="settings_allowed">Dominios permitidos</string>
+    <string name="settings_allowed_empty">Ninguno. Puedes permitir un dominio desde la pantalla principal.</string>
+    <string name="settings_allowed_remove">Quitar %1$s</string>
+    <string name="settings_excluded">Apps excluidas de la VPN</string>
+    <string name="settings_excluded_note">Su tráfico no pasa por el filtro. Úsalo solo para apps que dejen de funcionar con la protección.</string>
     <string name="notification_channel">Protección activa</string>
     <string name="notification_text">Bloqueando anuncios y rastreadores en todas las apps</string>
 </resources>

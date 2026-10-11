@@ -19,6 +19,8 @@ object NativeCore {
 
     /** Takes ownership of [filter]. [intercepted]: comma-separated resolver addresses. */
     @JvmStatic external fun nativeTunnelCreate(filter: Long, fd: Int, intercepted: String): Long
+    /** Takes ownership of [filter] and puts it in use at once (list update, allowlist change). */
+    @JvmStatic external fun nativeTunnelSetFilter(tunnel: Long, filter: Long)
     /** Comma-separated resolvers of the real network; a bare IP means port 53. */
     @JvmStatic external fun nativeTunnelSetUpstream(tunnel: Long, servers: String)
     /** Blocks until [nativeTunnelStop]; empty string, or the error that ended the tunnel. */
@@ -59,6 +61,11 @@ class NativeTunnel(filter: Long, fd: Int, intercepted: List<String>) : Closeable
 
     @Synchronized fun stop() {
         if (handle != 0L) NativeCore.nativeTunnelStop(handle)
+    }
+
+    /** Takes ownership of [filter], also when the tunnel is already closed. */
+    @Synchronized fun setFilter(filter: Long) {
+        if (handle != 0L) NativeCore.nativeTunnelSetFilter(handle, filter) else NativeCore.nativeDestroy(filter)
     }
 
     @Synchronized fun setUpstream(servers: List<String>) {

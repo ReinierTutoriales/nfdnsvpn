@@ -1,14 +1,19 @@
 package com.reiniertutoriales.nfdnsvpn.ui
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
+import android.os.Debug
+import android.os.Process
 import android.os.Handler
 import android.os.Looper
 import android.text.format.DateFormat
 import android.view.View
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import com.reiniertutoriales.nfdnsvpn.R
@@ -53,6 +58,8 @@ class MainActivity : ComponentActivity() {
         recent = findViewById(R.id.recent)
         toggle.setOnClickListener { onToggle() }
         mode.setOnClickListener { onModeChange() }
+        findViewById<Button>(R.id.allow).setOnClickListener { onAllowDomain() }
+        findViewById<Button>(R.id.settings).setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
         toggle.requestFocus()
     }
 
@@ -84,6 +91,24 @@ class MainActivity : ComponentActivity() {
         render()
     }
 
+    /** Allowlists one of the recently blocked names, picked with the remote (no typing on a TV). */
+    private fun onAllowDomain() {
+        val names = ShieldState.stats?.recent.orEmpty()
+        if (names.isEmpty()) {
+            AlertDialog.Builder(this).setMessage(R.string.allow_empty).setPositiveButton(android.R.string.ok, null).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.allow_title)
+            .setItems(names.toTypedArray()) { _, which ->
+                ShieldSettings.setDomainAllowed(this, names[which], true)
+                ShieldVpnService.reload(this)
+                Toast.makeText(this, R.string.allow_hint, Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     private fun render() {
         val phase = ShieldState.phase
         toggle.setText(if (phase == ShieldState.Phase.STOPPED) R.string.action_start else R.string.action_stop)
@@ -100,6 +125,10 @@ class MainActivity : ComponentActivity() {
         val lines = mutableListOf(getString(R.string.stats, ShieldState.rules, counters?.queries ?: 0L, counters?.blocked ?: 0L))
         if (phase == ShieldState.Phase.RUNNING && ShieldState.fullTunnel && counters != null) {
             lines += getString(R.string.stats_connections, counters.tcp, counters.udp, counters.quicRefused)
+        }
+        if (phase == ShieldState.Phase.RUNNING) {
+            // Whole app process: tunnel core, stack buffers and UI (phase 6 measurement).
+            lines += getString(R.string.usage, Debug.getPss() / 1024, Process.getElapsedCpuTime() / 1000)
         }
         stats.text = lines.joinToString("\n")
 

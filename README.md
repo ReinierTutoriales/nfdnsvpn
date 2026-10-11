@@ -6,7 +6,7 @@ HTTPS. En el lanzador aparece como **NF DNS VPN**.
 
 Premisas, arquitectura y fases: [`docs/PLAN.md`](docs/PLAN.md).
 
-## Estado: fase 4 (QUIC e IPv6), pendiente de probar en la TV
+## Estado: fases 1–5 hechas; falta la 6 (medir en la TV)
 
 Dos modos, elegibles con el botón **Modo** de la pantalla:
 
@@ -28,7 +28,12 @@ Lo que hacen ambos modos:
 - Listas: AdGuard DNS filter + HaGeZi Multi Pro + HaGeZi Encrypted DNS (descarga diaria) + una
   lista propia de servidores de anuncios de vídeo. Unos 304 000 dominios, unos 7 MB de RAM.
 - Pantalla para el mando: activar/desactivar, contador de consultas y bloqueos, últimos dominios
-  bloqueados, estado de las listas y aviso si el DNS privado del sistema se salta el filtro.
+  bloqueados, estado de las listas, consumo de la app y aviso si el DNS privado del sistema se
+  salta el filtro.
+- **Permitir un dominio** bloqueado eligiéndolo con el mando, sin teclear.
+- **Ajustes:** elegir listas (incluidas OISD small/big), quitar dominios permitidos, excluir apps
+  que fallen y activar la protección al encender la TV.
+- Las listas se actualizan solas una vez al día sin cortar las conexiones.
 
 ## Instalar en la TV
 
@@ -36,7 +41,8 @@ Lo que hacen ambos modos:
    descarga el artefacto `nfdnsvpn-debug`. Dentro está `app-debug.apk`.
 2. Instálalo con `adb install -r app-debug.apk` o con una app como Downloader / Send Files to TV.
 3. Abre **NF DNS VPN**, pulsa **Activar protección** y acepta el aviso de VPN de Android.
-4. Para que arranque sola al encender la TV: Ajustes › Red e Internet › VPN › NF DNS VPN ›
+4. Arranca sola al encender la TV si la dejaste activa (se puede desactivar en Ajustes de la
+   app). Como alternativa del sistema: Ajustes › Red e Internet › VPN › NF DNS VPN ›
    **VPN siempre activa**.
 5. Si el DNS privado del sistema está en modo estricto, desactívalo (la app lo avisa).
 
@@ -69,5 +75,5 @@ cargo run --release --example measure -- lista1.txt lista2.txt
 | `scripts/e2e-linux.sh` | Prueba de extremo a extremo del túnel en *network namespaces* |
 | `app/src/main/java/.../vpn` | `ShieldVpnService` (TUN y rutas de cada modo), DNS de la red, ajustes, estado |
 | `app/src/main/java/.../lists` | Descarga y caché de listas |
-| `app/src/main/java/.../ui` | Pantalla para el mando |
+| `app/src/main/java/.../ui` | Pantalla principal y ajustes, para el mando |
 | `app/src/main/assets/video-ads.txt` | Lista propia de servidores de anuncios de vídeo |

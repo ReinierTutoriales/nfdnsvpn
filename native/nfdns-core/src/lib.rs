@@ -132,6 +132,24 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
         .resolve::<ThrowRuntimeExAndDefault>()
 }
 
+/// Takes ownership of the filter handle and puts it in use at once (daily list update).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelSetFilter<'caller>(
+    _unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    filter_handle: jlong,
+) {
+    if filter_handle == 0 {
+        return;
+    }
+    // SAFETY: see `filter`; ownership moves into the tunnel (or is dropped without one).
+    let filter = *unsafe { Box::from_raw(filter_handle as *mut Filter) };
+    if let Some(t) = tunnel(handle) {
+        t.set_filter(filter);
+    }
+}
+
 /// Blocks until `nativeTunnelStop`; returns an empty string, or the error that ended the tunnel.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelRun<'caller>(

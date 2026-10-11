@@ -8,7 +8,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /** A remote DNS blocklist in adblock syntax (`||domain^`). */
-data class BlockList(val id: String, val name: String, val url: String)
+data class BlockList(val id: String, val name: String, val url: String, val enabledByDefault: Boolean)
 
 data class ListStatus(val name: String, val available: Boolean, val updatedAt: Long, val error: String?)
 
@@ -20,13 +20,18 @@ class LoadedLists(val texts: List<String>, val status: List<ListStatus>)
  */
 class ListRepository(private val context: Context) {
     companion object {
-        val DEFAULT_LISTS = listOf(
-            BlockList("adguard-dns", "AdGuard DNS filter", "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt"),
-            BlockList("hagezi-pro", "HaGeZi Multi Pro", "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"),
+        val ALL_LISTS = listOf(
+            BlockList("adguard-dns", "AdGuard DNS filter", "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt", true),
+            BlockList("hagezi-pro", "HaGeZi Multi Pro", "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt", true),
             // Encrypted DNS servers (DoH/DoQ): apps cannot resolve or reach them, so they fall back to
             // plain DNS. Applied to DNS answers and to the SNI of TCP connections.
-            BlockList("hagezi-doh", "HaGeZi Encrypted DNS", "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt"),
+            BlockList("hagezi-doh", "HaGeZi Encrypted DNS", "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt", true),
+            // Optional: mostly overlap with the defaults; big costs about 5 MB more RAM.
+            BlockList("oisd-small", "OISD small", "https://small.oisd.nl/", false),
+            BlockList("oisd-big", "OISD big", "https://big.oisd.nl/", false),
         )
+
+        fun selected(enabledIds: Set<String>) = ALL_LISTS.filter { it.id in enabledIds }
         const val BUNDLED_ASSET = "video-ads.txt"
         private const val MAX_AGE_MS = 24 * 60 * 60 * 1000L
         private const val MAX_TEXT_CHARS = 16 * 1024 * 1024
@@ -36,13 +41,20 @@ class ListRepository(private val context: Context) {
     private val dir = File(context.filesDir, "lists").apply { mkdirs() }
     private val prefs = context.getSharedPreferences("lists", Context.MODE_PRIVATE)
 
-    fun load(): LoadedLists {
-        val texts = mutableListOf(context.assets.open(BUNDLED_ASSET).bufferedReader().use { it.readText() })
+    /** True when one of the enabled lists is missing or older than a day. */
+    fun isDue(enabledIds: Set<String>) = selected(enabledIds).any { isDue(it) }
+
+    private fun isDue(list: BlockList) =
+        !File(dir, "${list.id}.txt").exists() || System.currentTimeMillis() - fetchedAt(list) > MAX_AGE_MS
+
+    /** Enabled lists (refreshed when due), the bundled video ad list and [extraRules] (allowlist). */
+    fun load(enabledIds: Set<String>, extraRules: String): LoadedLists {
+        val texts = mutableListOf(context.assets.open(BUNDLED_ASSET).bufferedReader().use { it.readText() }, extraRules)
         val status = mutableListOf<ListStatus>()
-        for (list in DEFAULT_LISTS) {
+        for (list in selected(enabledIds)) {
             val file = File(dir, "${list.id}.txt")
             var error: String? = null
-            if (!file.exists() || System.currentTimeMillis() - fetchedAt(list) > MAX_AGE_MS) {
+            if (isDue(list)) {
                 error = try {
                     refresh(list, file)
                     null
