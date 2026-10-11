@@ -9,6 +9,5 @@ build/
 *.hprof
 /native/nfdns-core/target
 
-# Signing keys never go into the (public) repository.
+# Signing keys never go into the (public) repository (*.keystore is above).
 *.jks
-*.keystore
