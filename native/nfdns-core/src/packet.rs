@@ -84,11 +84,11 @@ pub fn parse(data: &[u8]) -> Option<Packet<'_>> {
 }
 
 fn sum_words(mut sum: u32, data: &[u8]) -> u32 {
-    let mut chunks = data.chunks_exact(2);
-    for pair in &mut chunks {
-        sum += u16::from_be_bytes([pair[0], pair[1]]) as u32;
+    let (pairs, rest) = data.as_chunks::<2>();
+    for &pair in pairs {
+        sum += u16::from_be_bytes(pair) as u32;
     }
-    if let [last] = chunks.remainder() {
+    if let [last] = rest {
         sum += (*last as u32) << 8;
     }
     sum
