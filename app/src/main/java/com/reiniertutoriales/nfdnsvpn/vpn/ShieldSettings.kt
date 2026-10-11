@@ -13,6 +13,7 @@ object ShieldSettings {
     private const val EXCLUDED_APPS = "excludedApps"
     private const val START_ON_BOOT = "startOnBoot"
     private const val WANT_RUNNING = "wantRunning"
+    private const val ASKED_TO_KEEP_RUNNING = "askedToKeepRunning"
 
     private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -62,6 +63,11 @@ object ShieldSettings {
     fun wantRunning(context: Context) = prefs(context).getBoolean(WANT_RUNNING, false)
 
     fun setWantRunning(context: Context, running: Boolean) = prefs(context).edit { putBoolean(WANT_RUNNING, running) }
+
+    /** The battery-optimisation request is shown once; after that it is the user's choice. */
+    fun askedToKeepRunning(context: Context) = prefs(context).getBoolean(ASKED_TO_KEEP_RUNNING, false)
+
+    fun setAskedToKeepRunning(context: Context) = prefs(context).edit { putBoolean(ASKED_TO_KEEP_RUNNING, true) }
 
     /** Allowlist as exception rules for the filter (`@@||domain^` also covers subdomains). */
     fun allowlistRules(domains: Collection<String>): String = domains.sorted().joinToString("") { "@@||$it^\n" }

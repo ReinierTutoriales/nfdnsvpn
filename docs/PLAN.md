@@ -265,3 +265,13 @@ dominio bloqueado ni conectarse a él.
 **Límites que siguen existiendo** (ninguna herramienta sin descifrar el tráfico los cierra):
 una app que lleve sus consultas dentro de su propio protocolo cifrado hacia sus servidores, o
 que se conecte a una IP fija sin TLS ni nombre. Equivale a la app que sirve sus propios anuncios.
+
+## Interfaz mínima
+
+Una pantalla con un único botón grande (activar/desactivar), el estado y el número de bloqueos.
+Al activarlo por primera vez la app pide a Android lo que necesita: el permiso de VPN y, una vez,
+quedar fuera de la optimización de batería. Todo lo demás tiene valores por defecto válidos y está
+en **Opciones**, que no hace falta abrir. En la pantalla principal solo aparecen los problemas que
+impiden filtrar (error, DNS privado estricto). «Bloquear conexiones sin VPN» no se puede activar
+desde una app (solo desde los ajustes de Android, ADB o una app de administración de empresa):
+Opciones lo explica y abre ese ajuste.

@@ -28,31 +28,35 @@ Lo que hacen ambos modos:
   AdGuard): esas IPs se envían al túnel, y el DNS cifrado (DoT/DoH) hacia ellas se corta para que
   la app vuelva al DNS normal.
 - Desenmascara rastreadores escondidos tras un CNAME de un dominio propio.
-- Listas: AdGuard DNS filter + HaGeZi Multi Pro + HaGeZi Encrypted DNS (descarga diaria) + una
-  lista propia de servidores de anuncios de vídeo. Unos 304 000 dominios, unos 7 MB de RAM.
-- Pantalla para el mando: activar/desactivar, contador de consultas y bloqueos, últimos dominios
-  bloqueados, estado de las listas, consumo de la app y aviso si el DNS privado del sistema se
-  salta el filtro.
-- **Permitir un dominio** bloqueado eligiéndolo con el mando, sin teclear.
-- **Ajustes:** elegir listas (incluidas OISD small/big y las de uBlock Origin, de las que se usan
-  sus reglas de dominio), quitar dominios permitidos, excluir apps que fallen y activar la
-  protección al encender la TV.
+- Listas: AdGuard DNS filter + HaGeZi Multi Pro + HaGeZi Encrypted DNS + IPs de DNS cifrado
+  (descarga diaria) + una lista propia de servidores de anuncios de vídeo. Unos 304 000 dominios
+  y 4800 IPs, unos 7 MB de RAM.
+- Pantalla mínima: un botón grande de activar/desactivar, el estado y el número de bloqueos.
+- **Opciones** (opcional): cambiar de modo, permitir un dominio bloqueado eligiéndolo con el
+  mando, elegir listas (incluidas OISD small/big y las de uBlock Origin, de las que se usan sus
+  reglas de dominio), quitar dominios permitidos, excluir apps que fallen, arranque al encender
+  y estado/consumo.
 - Ligera: las listas se compilan leyendo los archivos línea a línea (pico de unos 17 MB al
   compilar, 7 MB después) y nada se consulta en segundo plano mientras no miras la pantalla.
 - Las listas se actualizan solas una vez al día sin cortar las conexiones.
 
-## Instalar en la TV
+## Instalar y usar
 
 1. Abre la pestaña **Actions** del repositorio, entra en la última ejecución verde de **CI** y
    descarga el artefacto `nfdnsvpn-debug`. Dentro está `app-debug.apk`.
 2. Instálalo con `adb install -r app-debug.apk` o con una app como Downloader / Send Files to TV.
-3. Abre **NF DNS VPN**, pulsa **Activar protección** y acepta el aviso de VPN de Android.
-4. Arranca sola al encender la TV si la dejaste activa (se puede desactivar en Ajustes de la
-   app). Como alternativa del sistema: Ajustes › Red e Internet › VPN › NF DNS VPN ›
-   **VPN siempre activa**.
-5. Si el DNS privado del sistema está en modo estricto, desactívalo (la app lo avisa).
-6. Para que nada salga sin filtrar si la protección se detiene: Ajustes › Red e Internet › VPN ›
-   NF DNS VPN › «VPN siempre activa» y «Bloquear conexiones sin VPN» (la app lo avisa si falta).
+3. Abre **NF DNS VPN** y pulsa el botón grande. La primera vez Android pide:
+   - el **permiso de VPN** (obligatorio), y
+   - que la app **no se detenga para ahorrar energía** (una sola vez).
+
+Eso es todo: la protección vuelve sola al encender la TV si la dejaste activada, y las listas
+se actualizan solas. **Opciones** (modo, listas, dominios permitidos, apps excluidas, estado y
+consumo) es opcional: lo que viene por defecto es lo recomendado.
+
+Lo único que una app no puede activar por sí misma en Android es «Bloquear conexiones sin VPN»
+(cubre los segundos en que la protección se reinicia). Es opcional y Opciones lleva directo a
+ese ajuste. El otro aviso posible: si el DNS privado de Android está en modo estricto, la
+pantalla lo indica, porque se salta el filtro.
 
 Cada build de CI se firma con una clave de depuración distinta: para instalar una versión nueva
 encima de otra puede hacer falta desinstalar antes.
@@ -83,5 +87,5 @@ cargo run --release --example measure -- lista1.txt lista2.txt
 | `scripts/e2e-linux.sh` | Prueba de extremo a extremo del túnel en *network namespaces* |
 | `app/src/main/java/.../vpn` | `ShieldVpnService` (TUN y rutas de cada modo), DNS de la red, ajustes, estado |
 | `app/src/main/java/.../lists` | Descarga y caché de listas |
-| `app/src/main/java/.../ui` | Pantalla principal y ajustes, para el mando |
+| `app/src/main/java/.../ui` | Pantalla de un botón y Opciones, para el mando |
 | `app/src/main/assets/video-ads.txt` | Lista propia de servidores de anuncios de vídeo |

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The one big switch: green when protecting (activated), grey when off; a ring when focused. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_activated="true" android:state_focused="true">
+        <shape android:shape="oval">
+            <solid android:color="@color/accent" />
+            <stroke android:width="8dp" android:color="@color/text_primary" />
+        </shape>
+    </item>
+    <item android:state_activated="true">
+        <shape android:shape="oval">
+            <solid android:color="@color/accent" />
+        </shape>
+    </item>
+    <item android:state_focused="true">
+        <shape android:shape="oval">
+            <solid android:color="@color/surface" />
+            <stroke android:width="8dp" android:color="@color/text_primary" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="@color/surface" />
+            <stroke android:width="3dp" android:color="@color/text_secondary" />
+        </shape>
+    </item>
+</selector>
