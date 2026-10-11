@@ -84,6 +84,7 @@ instaladas sin depender de ningún navegador.
 |---|---|---|
 | AdGuard DNS filter | `https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt` | Sí |
 | HaGeZi Multi Pro | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt` | Sí |
+| HaGeZi Encrypted DNS (servidores DoH/DoQ) | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt` | Sí (fase 3) |
 | OISD small | `https://small.oisd.nl/` | No (fase 5) |
 | Anuncios de vídeo (propia) | `app/src/main/assets/video-ads.txt` | Sí |
 
@@ -166,3 +167,24 @@ al cerrar conexiones. Se ejecuta en cada build de CI.
   crecería con el uso; se vigila en la fase 6.
 - **DNS a la IP del router:** en modo completo la LAN no pasa por el túnel, así que una app que
   pregunte directamente al router se salta el filtro. El resolvedor del sistema sí usa el nuestro.
+
+## Fase 3: SNI, DoH y CNAME
+
+**Estado:** hecho y probado en Linux con un TUN real (`scripts/e2e-linux.sh`, también en CI).
+
+| Técnica | Cómo | Modo |
+|---|---|---|
+| Nombre del servidor en TCP | Antes de reenviar la conexión se lee lo primero que envía la app: el SNI del ClientHello TLS (aunque llegue en varios segmentos o registros, como los ClientHello post-cuánticos de ~1,8 KB) o la cabecera `Host` de HTTP. Si el nombre está bloqueado, la conexión se cierra | Completo |
+| Sin latencia añadida | La conexión real se abre en paralelo mientras se lee el primer mensaje | Completo |
+| Puertos inspeccionados | 80, 443, 8080 y 8443. Si el cliente no habla en 3 s (protocolo en el que habla primero el servidor), se reenvía sin inspeccionar | Completo |
+| DNS cifrado (DoH/DoQ) | Lista HaGeZi Encrypted DNS (unos 3200 servidores): no se resuelven por DNS ni se conectan por SNI | Ambos (SNI solo en completo) |
+| CNAME uncloaking | Si la respuesta del DNS de la red lleva un CNAME hacia un dominio bloqueado (rastreador disfrazado de dominio propio), se responde como bloqueado | Ambos |
+
+**Con ECH** (Encrypted Client Hello) el SNI visible es el nombre público del proveedor
+(p. ej. `cloudflare-ech.com`), no el real: ahí siguen valiendo el DNS y el CNAME.
+
+**No incluido, a propósito:** listas de IPs de redes de anuncios. Los anuncios se sirven desde
+CDN compartidas y bloquear sus IPs rompería contenido legítimo. Las conexiones por IP fija sin
+nombre siguen pasando; con SNI se cubren las que usan TLS.
+
+Medida con las tres listas por defecto: 304 017 dominios, 6,9 MB de filtro.

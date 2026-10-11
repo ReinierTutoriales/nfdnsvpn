@@ -5,7 +5,7 @@
 #
 #   ns "tv":  tun0 10.111.0.2, default route via tun0           <- the apps (curl, python)
 #   ns "gw":  linux_tun example holding tun0's fd, veth 192.0.2.2 <- the tunnel
-#   ns "srv": veth 192.0.2.1: HTTP :8080, UDP echo :9999, fake DNS :53, nothing on :853
+#   ns "srv": veth 192.0.2.1: HTTP :8080, HTTPS :8443, UDP echo :9999, fake DNS :53, nothing on :853
 #
 # Needs root, iproute2, python3 and curl. Usage: sudo scripts/e2e-linux.sh
 # (or TUNNEL_BIN=<prebuilt linux_tun> sudo -E scripts/e2e-linux.sh)
@@ -29,7 +29,8 @@ trap "exit 130" INT TERM
 tv() { ip netns exec "$TV" "$@"; }
 gw() { ip netns exec "$GW" "$@"; }
 srv() { ip netns exec "$SRV" "$@"; }
-app() { ip netns exec "$TV" runuser -u nobody -- "$@"; }
+# Proxy variables (set in some CI and sandbox environments) would send curl around the TUN.
+app() { ip netns exec "$TV" runuser -u nobody -- env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY "$@"; }
 
 # CI builds the example as its normal user and passes TUNNEL_BIN, so root never runs cargo.
 if [[ -z "${TUNNEL_BIN:-}" ]]; then
@@ -48,26 +49,45 @@ gw ip tuntap add dev tun0 mode tun
 # Servers.
 head -c 200000000 /dev/zero > "$WORK/big"
 echo "hello through the tunnel" > "$WORK/small"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=e2e" -keyout "$WORK/key.pem" -out "$WORK/cert.pem" 2>/dev/null
 cat > "$WORK/servers.py" <<'EOF'
-import socket, struct, sys, threading
+import functools, http.server, os, socket, ssl, struct, sys, threading
 def udp_echo():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("192.0.2.1", 9999))
     while True:
         data, peer = s.recvfrom(2048); s.sendto(data, peer)
+def encode(name):
+    return b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00"
 def fake_dns():
+    # Every name resolves to 192.0.2.1; cloaked.example hides behind a tracker CNAME.
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("192.0.2.1", 53))
     while True:
         q, peer = s.recvfrom(2048)
-        end = 12
-        while q[end] != 0: end += q[end] + 1
+        end, labels = 12, []
+        while q[end] != 0:
+            labels.append(q[end + 1:end + 1 + q[end]].decode()); end += q[end] + 1
         question = q[12:end + 5]
-        answer = q[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00" + question
-        answer += b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + socket.inet_aton("192.0.2.1")
-        s.sendto(answer, peer)
+        if ".".join(labels) == "cloaked.example":
+            target = encode("pixel.doubleclick.net")
+            records = b"\xc0\x0c\x00\x05\x00\x01\x00\x00\x00\x3c" + struct.pack(">H", len(target)) + target
+            records += struct.pack(">H", 0xC000 | (12 + len(question) + 12)) + b"\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + socket.inet_aton("192.0.2.1")
+            count = 2
+        else:
+            records = b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + socket.inet_aton("192.0.2.1")
+            count = 1
+        s.sendto(q[:2] + b"\x81\x80\x00\x01" + struct.pack(">H", count) + b"\x00\x00\x00\x00" + question + records, peer)
+def https():
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[1])
+    server = http.server.ThreadingHTTPServer(("192.0.2.1", 8443), handler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(os.path.join(sys.argv[1], "cert.pem"), os.path.join(sys.argv[1], "key.pem"))
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    server.serve_forever()
 threading.Thread(target=udp_echo, daemon=True).start()
+threading.Thread(target=https, daemon=True).start()
 fake_dns()
 EOF
-srv python3 "$WORK/servers.py" & PIDS+=($!)
+srv python3 "$WORK/servers.py" "$WORK" > /dev/null 2>&1 & PIDS+=($!)
 srv python3 -m http.server 8080 --bind 192.0.2.1 --directory "$WORK" >/dev/null 2>&1 & PIDS+=($!)
 printf '||doubleclick.net^\n' > "$WORK/list.txt"
 ip netns exec "$GW" "$TUNNEL_BIN" tun0 192.0.2.1 "$WORK/list.txt" 10.111.0.1,8.8.8.8 > "$WORK/tunnel.log" 2>&1 &
@@ -115,6 +135,12 @@ check "DNS permitido (forzado aunque vaya a 8.8.8.8)" "192.0.2.1" "$(app python3
 check "TCP (HTTP por la pila smoltcp)" "hello through the tunnel" "$(app curl -s --max-time 5 http://192.0.2.1:8080/small)"
 check "UDP (NAT)" "udp-ok" "$(app python3 "$WORK/client.py" udp)"
 check "DoT (puerto 853) cortado con RST" "refused*" "$(app python3 "$WORK/client.py" refused 853)"
+check "CNAME de rastreador desenmascarado" "0.0.0.0" "$(app python3 "$WORK/client.py" dns 10.111.0.1 cloaked.example)"
+# --resolve skips DNS, so only the SNI / Host inspection can stop these.
+check "HTTPS permitido (SNI)" "hello through the tunnel" "$(app curl -sk --max-time 5 --resolve allowed.example:8443:192.0.2.1 https://allowed.example:8443/small)"
+# 35/56: the TLS handshake was cut after the ClientHello; 7 (no connection) would not prove it.
+check "HTTPS bloqueado por SNI" "blocked (curl [35][56])" "$(app curl -sk --max-time 5 --resolve ads.doubleclick.net:8443:192.0.2.1 https://ads.doubleclick.net:8443/small >/dev/null 2>&1 && echo served || echo "blocked (curl $?)")"
+check "HTTP bloqueado por Host" "blocked*" "$(out=$(app curl -s --max-time 5 -H 'Host: ads.doubleclick.net' http://192.0.2.1:8080/small); [[ -z "$out" ]] && echo blocked || echo "served: $out")"
 
 # Five bursts of 50 parallel connections: all must succeed, and memory must not keep growing
 # (a stuck connection would hold its stack and relay buffers). Measured after TIME-WAIT.

@@ -2,6 +2,7 @@
 
 pub const TYPE_A: u16 = 1;
 pub const TYPE_AAAA: u16 = 28;
+const TYPE_CNAME: u16 = 5;
 const CLASS_IN: u16 = 1;
 const HEADER_LEN: usize = 12;
 /// Short so that a list or allowlist change reaches apps within a minute.
@@ -63,6 +64,67 @@ pub fn parse_query(message: &[u8]) -> Option<Question> {
     Some(Question { name, qtype, qclass, end: at + 4 })
 }
 
+/// Name at `at` (compression pointers allowed), lowercase and dotted, plus the offset after it.
+fn read_name(message: &[u8], mut at: usize) -> Option<(String, usize)> {
+    let mut name = String::new();
+    let mut end = None;
+    // Each pointer must go backwards, so a loop cannot be longer than the message.
+    let mut jumps = 0;
+    loop {
+        let length = *message.get(at)? as usize;
+        match length {
+            0 => {
+                return Some((name, end.unwrap_or(at + 1)));
+            }
+            0xC0..=0xFF => {
+                let target = ((length & 0x3F) << 8) | *message.get(at + 1)? as usize;
+                jumps += 1;
+                if target >= at || jumps > 32 {
+                    return None;
+                }
+                end.get_or_insert(at + 2);
+                at = target;
+            }
+            1..=63 => {
+                let label = message.get(at + 1..at + 1 + length)?;
+                if !name.is_empty() {
+                    name.push('.');
+                }
+                name.extend(label.iter().map(|b| b.to_ascii_lowercase() as char));
+                if name.len() > 253 {
+                    return None;
+                }
+                at += 1 + length;
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Targets of the CNAME records in the answer section. Trackers hide behind a first-party name
+/// (`metrics.shop.example CNAME shop.tracker.example`); checking the chain uncloaks them.
+pub fn cname_targets(message: &[u8]) -> Vec<String> {
+    let mut targets = Vec::new();
+    let (Some(questions), Some(answers)) = (read_u16(message, 4), read_u16(message, 6)) else { return targets };
+    let mut at = HEADER_LEN;
+    for _ in 0..questions {
+        let Some((_, next)) = read_name(message, at) else { return targets };
+        at = next + 4;
+    }
+    for _ in 0..answers {
+        let Some((_, next)) = read_name(message, at) else { break };
+        let (Some(kind), Some(length)) = (read_u16(message, next), read_u16(message, next + 8)) else { break };
+        let rdata = next + 10;
+        if kind == TYPE_CNAME {
+            if let Some((target, _)) = read_name(message, rdata) {
+                targets.push(target);
+            }
+        }
+        at = rdata + length as usize;
+    }
+    targets
+}
+
 /// Answer for a blocked name: `0.0.0.0` for A, `::` for AAAA and an empty NOERROR answer for
 /// every other type (HTTPS/SVCB included, so no record hints at the real servers).
 pub fn blocked_response(query: &[u8], question: &Question) -> Vec<u8> {
@@ -110,8 +172,57 @@ pub(crate) fn build_query(id: u16, name: &str, qtype: u16) -> Vec<u8> {
 }
 
 #[cfg(test)]
+pub(crate) fn build_cname_answer(query: &[u8], targets: &[&str]) -> Vec<u8> {
+    let question = parse_query(query).unwrap();
+    let mut r = query[..question.end].to_vec();
+    r[2] |= 0x80;
+    r[6..8].copy_from_slice(&((targets.len() + 1) as u16).to_be_bytes());
+    let mut owner: u16 = 0xC000 | HEADER_LEN as u16; // pointer to the question name
+    for target in targets {
+        r.extend_from_slice(&owner.to_be_bytes());
+        r.extend_from_slice(&TYPE_CNAME.to_be_bytes());
+        r.extend_from_slice(&CLASS_IN.to_be_bytes());
+        r.extend_from_slice(&300u32.to_be_bytes());
+        let mut name = Vec::new();
+        for label in target.split('.') {
+            name.push(label.len() as u8);
+            name.extend_from_slice(label.as_bytes());
+        }
+        name.push(0);
+        r.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        owner = 0xC000 | (r.len() as u16); // the next record is owned by this target
+        r.extend_from_slice(&name);
+    }
+    r.extend_from_slice(&owner.to_be_bytes());
+    r.extend_from_slice(&TYPE_A.to_be_bytes());
+    r.extend_from_slice(&CLASS_IN.to_be_bytes());
+    r.extend_from_slice(&300u32.to_be_bytes());
+    r.extend_from_slice(&[0, 4, 192, 0, 2, 1]);
+    r
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_cname_chain_with_compression() {
+        let query = build_query(5, "metrics.shop.example", TYPE_A);
+        let answer = build_cname_answer(&query, &["shop.tracker.example", "edge.cdn.example"]);
+        assert_eq!(cname_targets(&answer), vec!["shop.tracker.example", "edge.cdn.example"]);
+        assert!(cname_targets(&answer[..20]).is_empty());
+        assert!(cname_targets(&query).is_empty());
+    }
+
+    #[test]
+    fn rejects_forward_and_looping_pointers() {
+        let mut message = vec![0u8; 12];
+        message.extend_from_slice(&[0xC0, 14, 0]);
+        assert!(read_name(&message, 12).is_none());
+        let mut looping = vec![0u8; 12];
+        looping.extend_from_slice(&[0xC0, 12]);
+        assert!(read_name(&looping, 12).is_none());
+    }
 
     #[test]
     fn parses_question() {

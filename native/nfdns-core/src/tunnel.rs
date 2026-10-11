@@ -6,8 +6,10 @@
 //! relayed through an ordinary socket. Those sockets do not loop back into the tunnel because the
 //! app excludes itself from the VPN (`addDisallowedApplication`).
 
+use crate::dns;
 use crate::filter::Filter;
 use crate::route::{classify, wrap_reply, Verdict};
+use crate::sni::{self, Peek};
 use futures::{SinkExt, StreamExt};
 use netstack_smoltcp::udp::UdpMsg;
 use netstack_smoltcp::StackBuilder;
@@ -42,6 +44,11 @@ const RECENT_LIMIT: usize = 30;
 /// short connections), which would otherwise keep the task and its buffers forever.
 const HALF_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+/// Ports whose clients speak first with TLS or HTTP, so the server name can be read before the
+/// connection is relayed. Other ports are relayed without waiting.
+const INSPECTED_PORTS: [u16; 4] = [80, 443, 8080, 8443];
+/// How long a client on an inspected port may stay silent before it is relayed uninspected.
+const PEEK_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Quad9, only when the network announces no resolver.
 const FALLBACK_UPSTREAM: [SocketAddr; 2] = [
@@ -59,9 +66,14 @@ pub struct Stats {
 }
 
 impl Stats {
+    /// A DNS query answered as blocked.
     fn record_blocked(&self, name: String) {
         self.queries.fetch_add(1, Ordering::Relaxed);
         self.blocked.fetch_add(1, Ordering::Relaxed);
+        self.remember(name);
+    }
+
+    fn remember(&self, name: String) {
         let mut recent = self.recent.lock().unwrap();
         recent.retain(|n| *n != name);
         recent.push_front(name);
@@ -192,7 +204,7 @@ impl Tunnel {
         });
 
         if let Some(tcp) = tcp {
-            tokio::spawn(relay_tcp(tcp, self.stats.clone()));
+            tokio::spawn(relay_tcp(tcp, self.filter.clone(), self.stats.clone()));
         }
         if let Some(udp) = udp {
             tokio::spawn(relay_udp(udp, self.stats.clone()));
@@ -213,7 +225,7 @@ impl Tunnel {
                 Verdict::Forward { query, .. } => {
                     self.stats.queries.fetch_add(1, Ordering::Relaxed);
                     let servers = self.upstream.lock().unwrap().clone();
-                    tokio::spawn(forward_dns(data.to_vec(), query, servers, to_tun.clone()));
+                    tokio::spawn(forward_dns(data.to_vec(), query, servers, to_tun.clone(), self.filter.clone(), self.stats.clone()));
                 }
                 Verdict::Stack => {
                     if let Err(e) = stack_sink.send(data.to_vec()).await {
@@ -281,7 +293,14 @@ fn unspecified_for(address: &SocketAddr) -> SocketAddr {
     }
 }
 
-async fn forward_dns(request: Vec<u8>, query: Vec<u8>, servers: Vec<SocketAddr>, to_tun: mpsc::Sender<Vec<u8>>) {
+async fn forward_dns(
+    request: Vec<u8>,
+    query: Vec<u8>,
+    servers: Vec<SocketAddr>,
+    to_tun: mpsc::Sender<Vec<u8>>,
+    filter: Arc<Filter>,
+    stats: Arc<Stats>,
+) {
     let servers = if servers.is_empty() { FALLBACK_UPSTREAM.to_vec() } else { servers };
     let mut answer = vec![0u8; MAX_PACKET];
     for server in servers.iter().take(2) {
@@ -294,7 +313,16 @@ async fn forward_dns(request: Vec<u8>, query: Vec<u8>, servers: Vec<SocketAddr>,
             match timeout_at(deadline, socket.recv(&mut answer)).await {
                 // Same transaction ID as the query, or it is not our answer.
                 Ok(Ok(n)) if n >= 2 && answer[..2] == query[..2] => {
-                    if let Some(packet) = wrap_reply(&request, &answer[..n]) {
+                    let cloaked = dns::cname_targets(&answer[..n]).into_iter().find(|name| filter.is_blocked(name));
+                    let reply = match (cloaked, dns::parse_query(&query)) {
+                        (Some(target), Some(question)) => {
+                            stats.blocked.fetch_add(1, Ordering::Relaxed);
+                            stats.remember(target);
+                            dns::blocked_response(&query, &question)
+                        }
+                        _ => answer[..n].to_vec(),
+                    };
+                    if let Some(packet) = wrap_reply(&request, &reply) {
                         let _ = to_tun.send(packet).await;
                     }
                     return;
@@ -306,15 +334,38 @@ async fn forward_dns(request: Vec<u8>, query: Vec<u8>, servers: Vec<SocketAddr>,
     }
 }
 
-async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, stats: Arc<Stats>) {
-    while let Some((inbound, _local, remote)) = listener.next().await {
-        let stats = stats.clone();
+async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: Arc<Filter>, stats: Arc<Stats>) {
+    while let Some((mut inbound, _local, remote)) = listener.next().await {
+        let (filter, stats) = (filter.clone(), stats.clone());
         tokio::spawn(async move {
             let _active = Active::new(&stats.tcp_active);
+            // Connect while the app sends its first bytes, so inspection adds no round trip.
+            let connect = tokio::spawn(timeout(CONNECT_TIMEOUT, TcpStream::connect(remote)));
+            let first = if INSPECTED_PORTS.contains(&remote.port()) {
+                match first_flight(&mut inbound).await {
+                    Some((_, Some(name))) if filter.is_blocked(&name) => {
+                        // Closing `inbound` makes the app see the connection fail at once.
+                        connect.abort();
+                        stats.blocked.fetch_add(1, Ordering::Relaxed);
+                        stats.remember(name);
+                        return;
+                    }
+                    Some((first, _)) => first,
+                    None => {
+                        connect.abort();
+                        return;
+                    }
+                }
+            } else {
+                Vec::new()
+            };
             // The app already completed its handshake with the stack; if the real server is
             // unreachable, dropping `inbound` resets the connection.
-            let Ok(Ok(outbound)) = timeout(CONNECT_TIMEOUT, TcpStream::connect(remote)).await else { return };
+            let Ok(Ok(Ok(mut outbound))) = connect.await else { return };
             let _ = outbound.set_nodelay(true);
+            if !first.is_empty() && outbound.write_all(&first).await.is_err() {
+                return;
+            }
             let (app_read, app_write) = tokio::io::split(inbound);
             let (server_read, server_write) = outbound.into_split();
             let upload = pipe(app_read, server_write);
@@ -325,6 +376,28 @@ async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, stats: Arc<Stats
                 _ = &mut download => { let _ = timeout(HALF_CLOSE_TIMEOUT, upload).await; }
             }
         });
+    }
+}
+
+/// Reads what the app sends first until its server name is known (or cannot be), at most
+/// [`sni::MAX_PEEK`] bytes or [`PEEK_TIMEOUT`]. `None` if the app closed before sending anything.
+async fn first_flight(inbound: &mut netstack_smoltcp::TcpStream) -> Option<(Vec<u8>, Option<String>)> {
+    let mut first = Vec::new();
+    let mut chunk = vec![0u8; RELAY_BUFFER];
+    let deadline = Instant::now() + PEEK_TIMEOUT;
+    loop {
+        match sni::server_name(&first) {
+            Peek::Name(name) => return Some((first, Some(name))),
+            Peek::NoName => return Some((first, None)),
+            Peek::NeedMore if first.len() >= sni::MAX_PEEK => return Some((first, None)),
+            Peek::NeedMore => {}
+        }
+        match timeout_at(deadline, inbound.read(&mut chunk)).await {
+            Ok(Ok(0)) | Ok(Err(_)) => return if first.is_empty() { None } else { Some((first, None)) },
+            Ok(Ok(n)) => first.extend_from_slice(&chunk[..n]),
+            // Silent client (server-speaks-first protocol on this port): relay uninspected.
+            Err(_) => return Some((first, None)),
+        }
     }
 }
 

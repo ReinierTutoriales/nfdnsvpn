@@ -23,6 +23,9 @@ class ListRepository(private val context: Context) {
         val DEFAULT_LISTS = listOf(
             BlockList("adguard-dns", "AdGuard DNS filter", "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt"),
             BlockList("hagezi-pro", "HaGeZi Multi Pro", "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"),
+            // Encrypted DNS servers (DoH/DoQ): apps cannot resolve or reach them, so they fall back to
+            // plain DNS. Applied to DNS answers and to the SNI of TCP connections.
+            BlockList("hagezi-doh", "HaGeZi Encrypted DNS", "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt"),
         )
         const val BUNDLED_ASSET = "video-ads.txt"
         private const val MAX_AGE_MS = 24 * 60 * 60 * 1000L

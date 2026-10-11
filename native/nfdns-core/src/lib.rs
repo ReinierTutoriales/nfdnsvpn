@@ -9,6 +9,7 @@ pub mod dns;
 pub mod filter;
 pub mod packet;
 pub mod route;
+pub mod sni;
 pub mod tunnel;
 
 use filter::{Filter, FilterBuilder};
