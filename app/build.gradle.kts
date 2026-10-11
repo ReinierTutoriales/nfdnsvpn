@@ -67,10 +67,25 @@ android {
         applicationId = "com.reiniertutoriales.nfdnsvpn"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 1
+        // Each CI build is newer than the last, so it installs over it as an update.
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionName = "0.1.0"
         ndk {
             abiFilters += rustAbis
+        }
+    }
+
+    // The release key never enters the repository (it is public): CI decodes it from the
+    // repository's Actions secrets into a temporary file and passes it through these variables.
+    val releaseKeystore = System.getenv("RELEASE_KEYSTORE_PATH")?.takeIf { it.isNotEmpty() }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+            }
         }
     }
 
@@ -79,9 +94,11 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Release signing is not configured yet; CI validates the build with the debug key.
-            if (System.getenv("CI_SIGN_RELEASE_WITH_DEBUG_KEY") == "true") {
-                signingConfig = signingConfigs.getByName("debug")
+            signingConfig = when {
+                releaseKeystore != null -> signingConfigs.getByName("release")
+                // Without the secrets (forks, pull requests) CI still checks the release build.
+                System.getenv("CI_SIGN_RELEASE_WITH_DEBUG_KEY") == "true" -> signingConfigs.getByName("debug")
+                else -> null
             }
         }
     }

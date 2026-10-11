@@ -49,8 +49,9 @@ Lo que hacen ambos modos:
 ## Instalar y usar
 
 1. Abre la pestaña **Actions** del repositorio, entra en la última ejecución verde de **CI** y
-   descarga el artefacto `nfdnsvpn-debug`. Dentro está `app-debug.apk`.
-2. Instálalo con `adb install -r app-debug.apk` o con una app como Downloader / Send Files to TV.
+   descarga el artefacto `nfdnsvpn-release` (firmado con la clave fija; dentro está
+   `app-release.apk`). Si aún no existe, `nfdnsvpn-debug` sirve para probar.
+2. Instálalo con `adb install -r app-release.apk` o con una app como Downloader / Send Files to TV.
 3. Abre **NF DNS VPN** y pulsa el botón grande. La primera vez Android pide:
    - el **permiso de VPN** (obligatorio), y
    - que la app **no se detenga para ahorrar energía** (una sola vez).
@@ -64,8 +65,13 @@ Lo único que una app no puede activar por sí misma en Android es «Bloquear co
 ese ajuste. El otro aviso posible: si el DNS privado de Android está en modo estricto, la
 pantalla lo indica, porque se salta el filtro.
 
-Cada build de CI se firma con una clave de depuración distinta: para instalar una versión nueva
-encima de otra puede hacer falta desinstalar antes.
+**Firma.** El APK `nfdnsvpn-release` se firma siempre con la misma clave, así que cada versión
+nueva se instala encima de la anterior sin perder los ajustes (su `versionCode` es el número de
+ejecución del CI). La clave no está en el repositorio, que es público: el CI la lee de cuatro
+secretos de Actions (`RELEASE_KEYSTORE_BASE64`, `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS`,
+`RELEASE_KEY_PASSWORD`). Sin ellos solo genera `nfdnsvpn-debug`, firmado con una clave de
+depuración que cambia en cada ejecución (hay que desinstalar para actualizar). Pasar de la versión
+debug a la release también exige desinstalar una vez.
 
 ## Compilar
 

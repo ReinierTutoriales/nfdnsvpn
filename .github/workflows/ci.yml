@@ -64,10 +64,32 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: Validate release build
+      # Signed with the fixed release key when the repository has it as Actions secrets
+      # (RELEASE_KEYSTORE_BASE64, RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD);
+      # otherwise only validated with the debug key.
+      - name: Release build
         env:
           CI_SIGN_RELEASE_WITH_DEBUG_KEY: 'true'
-        run: ./gradlew assembleRelease --stacktrace
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            export RELEASE_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+            echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RELEASE_KEYSTORE_PATH"
+            echo "SIGNED_RELEASE=true" >> "$GITHUB_ENV"
+          fi
+          ./gradlew assembleRelease --stacktrace
+          rm -f "$RUNNER_TEMP/release.jks"
+
+      - name: Upload signed release APK
+        if: env.SIGNED_RELEASE == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: nfdnsvpn-release
+          path: app/build/outputs/apk/release/*.apk
+          retention-days: 90
 
       - name: Upload reports
         if: failure()
