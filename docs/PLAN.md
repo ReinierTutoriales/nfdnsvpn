@@ -83,7 +83,9 @@ instaladas sin depender de ningún navegador.
 | Lista | URL | Por defecto |
 |---|---|---|
 | AdGuard DNS filter | `https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt` | Sí |
-| HaGeZi Multi Pro | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt` | Sí |
+| HaGeZi Ultimate (la más estricta de HaGeZi) | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/ultimate.txt` | Sí |
+| HaGeZi native: telemetría de fabricantes (samsung, lgwebos, amazon, roku, xiaomi, tiktok, apple, huawei, oppo-realme, vivo, winoffice) | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/native.<fabricante>.txt` | Sí |
+| HaGeZi Multi Pro (subconjunto más ligero de Ultimate) | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt` | No (opcional en Ajustes) |
 | HaGeZi Encrypted DNS (servidores DoH/DoQ) | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt` | Sí (fase 3) |
 | IPs de DNS cifrado: HaGeZi `ips/doh.txt` + dibdot `doh-ipv4.txt` y `doh-ipv6.txt` | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/ips/doh.txt`, `https://raw.githubusercontent.com/dibdot/DoH-IP-blocklists/master/doh-ipv{4,6}.txt` | Sí (anti-bypass) |
 | OISD small | `https://small.oisd.nl/` | No (opcional en Ajustes) |
@@ -215,7 +217,7 @@ encender, exclusiones) solo se puede probar en el dispositivo.
 
 | Función | Cómo |
 |---|---|
-| Elegir listas | Ajustes › Listas de bloqueo: AdGuard DNS, HaGeZi Pro, HaGeZi Encrypted DNS (activas por defecto), OISD small y OISD big (opcionales). La lista propia de vídeo siempre está activa |
+| Elegir listas | Ajustes › Listas de bloqueo: AdGuard DNS, HaGeZi Ultimate, HaGeZi native, HaGeZi Encrypted DNS e IPs de DNS cifrado (activas por defecto); HaGeZi Pro, OISD small/big y uBlock Origin (opcionales). La lista propia de vídeo siempre está activa |
 | Lista blanca sin teclado | "Permitir un dominio bloqueado" en la pantalla principal muestra los últimos bloqueados; se elige con el mando. Se aplica como `@@||dominio^` (también subdominios) y se quita en Ajustes |
 | Apps excluidas | Ajustes › Apps excluidas: lista de apps con icono en el lanzador; su tráfico no pasa por la VPN (`addDisallowedApplication`) |
 | Aplicar cambios | Listas y lista blanca: se cambia el filtro en caliente, sin cortar conexiones. Exclusiones: se reinicia el túnel (las rutas y apps se fijan al crearlo) |
@@ -313,11 +315,13 @@ medida con la misma operación sin túnel) y `scripts/validate-lists.sh` (eficac
 
 ### Eficacia de las listas por defecto
 
+AdGuard DNS + HaGeZi Ultimate + native + DNS cifrado: unos 340 000 dominios y 3400 IPs, filtro de unos 7,6 MB.
+
 | Conjunto | Resultado |
 |---|---|
-| Test de bloqueadores de d3ward (131 dominios de anuncios, analítica, rastreadores, fabricantes) | 129 bloqueados (98,5 %); escapan `udc.yahoo.com` y `analytics.pinterest.com` |
+| Test de bloqueadores de d3ward (131 dominios de anuncios, analítica, rastreadores, fabricantes) | 131 bloqueados (100 %) |
 | 50 dominios críticos de TV (YouTube, Netflix, Prime, Disney+, Twitch, Spotify, Plex, Pluto, Play, FCM, hora, conectividad) | 0 bloqueados |
-| Top 1000 de Tranco | 101 bloqueados, casi todos publicidad y analítica. A revisar por el usuario si molestan: `kwai.com` y `stripchat.com` (HaGeZi Pro), `forter.com` (AdGuard, antifraude en pagos) — se pueden permitir en Opciones |
+| Top 1000 de Tranco | 119 bloqueados, casi todos publicidad, analítica y rastreadores. Ultimate prioriza bloquear: si algo deja de funcionar se permite en Opciones o se cambia a HaGeZi Pro |
 
 ### Lo que solo se puede medir en la onn
 

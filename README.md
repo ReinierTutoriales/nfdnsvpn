@@ -28,12 +28,14 @@ Lo que hacen ambos modos:
   AdGuard): esas IPs se envían al túnel, y el DNS cifrado (DoT/DoH) hacia ellas se corta para que
   la app vuelva al DNS normal.
 - Desenmascara rastreadores escondidos tras un CNAME de un dominio propio.
-- Listas: AdGuard DNS filter + HaGeZi Multi Pro + HaGeZi Encrypted DNS + IPs de DNS cifrado
-  (descarga diaria) + una lista propia de servidores de anuncios de vídeo. Unos 304 000 dominios
-  y 4800 IPs, unos 7 MB de RAM.
+- Listas (prioridad: bloquear): AdGuard DNS filter + HaGeZi Ultimate + telemetría de fabricantes
+  (HaGeZi native: Samsung, LG, Amazon, Roku, Xiaomi…) + HaGeZi Encrypted DNS + IPs de DNS cifrado
+  (descarga diaria) + una lista propia de servidores de anuncios de vídeo. Unos 340 000 dominios
+  y 3400 IPs, unos 7,6 MB de RAM. Bloquea los 131 dominios del test de d3ward y ninguno de los 50
+  dominios críticos de TV medidos.
 - Pantalla mínima: un botón grande de activar/desactivar, el estado y el número de bloqueos.
 - **Opciones** (opcional): cambiar de modo, permitir un dominio bloqueado eligiéndolo con el
-  mando, elegir listas (incluidas OISD small/big y las de uBlock Origin, de las que se usan sus
+  mando, elegir listas (incluidas HaGeZi Pro, más ligera, OISD small/big y las de uBlock Origin, de las que se usan sus
   reglas de dominio), quitar dominios permitidos, excluir apps que fallen, arranque al encender
   y estado/consumo.
 - Ligera: las listas se compilan leyendo los archivos línea a línea (pico de unos 17 MB al

@@ -10,11 +10,18 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 # Same sources and defaults as ListRepository.ALL_LISTS.
+HZ=https://raw.githubusercontent.com/hagezi/dns-blocklists/main
 LISTS=(
     https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
-    https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt
-    https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt
+    $HZ/adblock/ultimate.txt
+    $HZ/adblock/doh.txt
+    $HZ/ips/doh.txt
+    https://raw.githubusercontent.com/dibdot/DoH-IP-blocklists/master/doh-ipv4.txt
+    https://raw.githubusercontent.com/dibdot/DoH-IP-blocklists/master/doh-ipv6.txt
 )
+for vendor in samsung lgwebos amazon roku xiaomi tiktok apple huawei oppo-realme vivo winoffice; do
+    LISTS+=("$HZ/adblock/native.$vendor.txt")
+done
 files=(app/src/main/assets/video-ads.txt)
 for i in "${!LISTS[@]}"; do
     curl -sSfL -o "$WORK/list$i.txt" "${LISTS[$i]}"

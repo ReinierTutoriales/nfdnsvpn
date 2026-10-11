@@ -17,6 +17,8 @@ data class BlockList(
     val urls: List<String>,
     val enabledByDefault: Boolean,
     val ipList: Boolean = false,
+    /** Fewer rules than this in a downloaded file means an error page or a truncated download. */
+    val minRules: Int = 100,
 ) {
     constructor(id: String, name: String, url: String, enabledByDefault: Boolean) : this(id, name, listOf(url), enabledByDefault)
 
@@ -39,7 +41,18 @@ class ListRepository(private val context: Context) {
     companion object {
         val ALL_LISTS = listOf(
             BlockList("adguard-dns", "AdGuard DNS filter", "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt", true),
-            BlockList("hagezi-pro", "HaGeZi Multi Pro", "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt", true),
+            // Blocking first: Ultimate, HaGeZi's strictest general list. Measured with
+            // scripts/validate-lists.sh: the defaults block all 131 domains of d3ward's adblock
+            // test and none of the 50 critical TV domains; ~340 000 domains, ~7.6 MB.
+            BlockList("hagezi-ultimate", "HaGeZi Ultimate", "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/ultimate.txt", true),
+            // Telemetry of TV, phone and OS makers (Samsung, LG webOS, Amazon, Roku, Xiaomi...).
+            BlockList(
+                "hagezi-native", "Telemetría de fabricantes y sistemas (HaGeZi native)",
+                listOf("samsung", "lgwebos", "amazon", "roku", "xiaomi", "tiktok", "apple", "huawei", "oppo-realme", "vivo", "winoffice")
+                    .map { "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/native.$it.txt" },
+                true,
+                minRules = 20,
+            ),
             // Encrypted DNS servers (DoH/DoQ): apps cannot resolve or reach them, so they fall back to
             // plain DNS. Applied to DNS answers and to the SNI of TCP connections.
             BlockList("hagezi-doh", "HaGeZi Encrypted DNS", "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt", true),
@@ -55,7 +68,9 @@ class ListRepository(private val context: Context) {
                 true,
                 ipList = true,
             ),
-            // Optional: mostly overlap with the defaults; big costs about 5 MB more RAM.
+            // Optional. Pro is a lighter subset of Ultimate (fewer breakages, a bit less blocked).
+            BlockList("hagezi-pro", "HaGeZi Multi Pro (más ligera que Ultimate)", "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt", false),
+            // Mostly overlap with the defaults; big costs about 5 MB more RAM.
             BlockList("oisd-small", "OISD small", "https://small.oisd.nl/", false),
             BlockList("oisd-big", "OISD big", "https://big.oisd.nl/", false),
             // uBlock Origin's own lists. Only their plain domain rules apply outside a browser
@@ -77,8 +92,6 @@ class ListRepository(private val context: Context) {
         const val BUNDLED_ASSET = "video-ads.txt"
         private const val MAX_AGE_MS = 24 * 60 * 60 * 1000L
         private const val MAX_TEXT_CHARS = 16L * 1024 * 1024
-        /** A list with fewer rules (domains or addresses) is an error page or a truncated download. */
-        private const val MIN_RULES = 100
     }
 
     private val dir = File(context.filesDir, "lists").apply { mkdirs() }
@@ -102,7 +115,7 @@ class ListRepository(private val context: Context) {
             for ((key, url) in list.sources()) {
                 if (isDue(key)) {
                     try {
-                        refresh(key, url, list.ipList)
+                        refresh(key, url, list)
                     } catch (e: IOException) {
                         error = error ?: (e.message ?: e.javaClass.simpleName)
                     }
@@ -128,7 +141,7 @@ class ListRepository(private val context: Context) {
 
     fun bundledRules(): String = context.assets.open(BUNDLED_ASSET).bufferedReader().use { it.readText() }
 
-    private fun refresh(key: String, url: String, ipList: Boolean) {
+    private fun refresh(key: String, url: String, list: BlockList) {
         val target = file(key)
         val connection = URL(url).openConnection() as HttpURLConnection
         connection.connectTimeout = 10_000
@@ -157,13 +170,13 @@ class ListRepository(private val context: Context) {
                         val line = reader.readLine() ?: break
                         characters += line.length + 1
                         if (characters > MAX_TEXT_CHARS) throw IOException("Lista demasiado grande")
-                        if (if (ipList) looksLikeAddress(line) else line.startsWith("||")) rules++
+                        if (if (list.ipList) looksLikeAddress(line) else line.startsWith("||")) rules++
                         writer.write(line)
                         writer.write('\n'.code)
                     }
                 }
             }
-            if (rules < MIN_RULES) throw IOException("El servidor no devolvió una lista válida")
+            if (rules < list.minRules) throw IOException("El servidor no devolvió una lista válida")
             if (!partial.renameTo(target)) throw IOException("No se pudo guardar la lista")
             prefs.edit {
                 putLong("$key.fetchedAt", System.currentTimeMillis())
