@@ -41,7 +41,7 @@ instaladas sin depender de ningún navegador.
                      ▼
    Núcleo Rust (libnfdns.so), un hilo, tokio current-thread
    clasificador (route.rs)
-     ├─ UDP 53 a cualquier IP ─► filtro ─► respuesta local o reenvío al DNS de la red
+     ├─ UDP 53 a cualquier IP ─► filtro ─► respuesta local o reenvío cifrado (DoT) al DNS elegido
      ├─ TCP 53, puerto 853, otros puertos de resolvedores ─► RST / descarte
      └─ resto (modo completo) ─► pila TCP/IP smoltcp (netstack-smoltcp)
                                    ├─ TCP ─► relay con TcpStream real
@@ -112,7 +112,7 @@ modificadores (`$third-party`…) o cosméticas se ignoran: sin descifrar no se 
 | Tema | Decisión | Motivo |
 |---|---|---|
 | Nombre y paquete | "NF DNS VPN", `com.reiniertutoriales.nfdnsvpn` | Proyecto independiente, mismo nombre que el repositorio |
-| DNS de subida | El de la red real (router); si no anuncia ninguno, Quad9 | La app se excluye de la VPN, así que ve la red real |
+| DNS de subida | Siempre cifrado (DNS sobre TLS) al proveedor elegido; por defecto Quad9 + Cloudflare. El router y la operadora nunca se usan como DNS (ver «DNS de subida: local, cifrado e independiente») | Fase 1-5 usaban el DNS de la red en claro: lo veía y podía alterarlo la operadora |
 | Respuesta de bloqueo | `0.0.0.0` / `::` con TTL de 60 s; vacía para otros tipos | Un cambio de lista llega a las apps en un minuto |
 | Resolvedores públicos | Sus IPs van al túnel; DNS se filtra, TCP recibe RST, QUIC se descarta | Cierra el DNS fijo y el DoT/DoH hacia ellos desde la fase 1 |
 | Red medida | `setMetered(false)` | Desde Android 10 una VPN es medida por defecto y las apps de vídeo bajan la calidad |
@@ -279,6 +279,7 @@ dominio bloqueado ni conectarse a él.
 |---|---|---|
 | Resolvedor propio (cualquier IP, UDP 53) | Modo completo por defecto: toda consulta UDP 53 se contesta en el túnel | Sí (8.8.8.8 y 203.0.113.53) |
 | DNS directo al router (está en la LAN, fuera del túnel) | Se enrutan al túnel solo las IP de los DNS de la red; el resto de la LAN sigue directa | No (es enrutado de Android) |
+| La operadora lee o cambia el DNS (incluso el redirigido de forma transparente) | Lo permitido sale solo por DNS sobre TLS con certificado comprobado; sin vuelta al DNS en claro | Sí (certificado de otro nombre y servidor caído: sin respuesta) |
 | DNS por TCP, DoT y DoQ (853) | RST / descarte hacia cualquier IP | Sí |
 | DoH por nombre | Lista HaGeZi Encrypted DNS, por DNS y por SNI | Sí (SNI) |
 | DoH por IP fija | Listas de IPs de DNS cifrado (unas 3400 IPv4 y 1400 IPv6): se corta todo lo que no sea DNS hacia ellas. Solo IPs públicas: nunca se bloquea una dirección local | Sí |
@@ -294,6 +295,32 @@ dominio bloqueado ni conectarse a él.
 una app que lleve sus consultas dentro de su propio protocolo cifrado hacia sus servidores, o
 que se conecte a una IP fija sin TLS ni nombre. Equivale a la app que sirve sus propios anuncios.
 Para esas apps queda el último recurso: **cortarles internet por completo** (abajo).
+
+## DNS de subida: local, cifrado e independiente
+
+- **Local:** el filtro está en el dispositivo; lo bloqueado se contesta en la TV y nunca sale. La
+  caché también es local: la de Android (por red), por lo que la app no añade otra.
+- **Lo permitido tiene que salir:** la IP de un dominio solo la saben sus servidores. La cuestión
+  es a quién se pregunta y cómo.
+- **Por qué no un resolvedor recursivo local (tipo Unbound):** preguntaría él mismo a los
+  servidores raíz y de cada dominio, pero en claro por la red de la operadora, que lo vería todo y
+  podría falsificarlo sin DNSSEC. Es lo contrario de lo que se busca, y mucho más código.
+- **Lo elegido:** DNS sobre TLS (RFC 7858) a proveedores elegidos en Opciones › Servidor DNS, con
+  certificado comprobado contra las raíces de Mozilla incluidas en la app (no depende de nada del
+  sistema). Por defecto Quad9 + Cloudflare: dos empresas independientes, se alterna si una falla.
+  Opciones: Cloudflare, Cloudflare con bloqueo de malware, Quad9, AdGuard, Mullvad, Google o uno
+  propio (`tls://IP#nombre`, también obligatoriamente cifrado).
+- **Nunca** se usa el DNS del router ni de la operadora, ni hay vuelta al DNS en claro: si el
+  cifrado falla, la consulta queda sin respuesta y la pantalla lo avisa.
+- **Eficiencia:** una sola conexión TLS 1.3 para todas las consultas (en paralelo, RFC 7766),
+  abierta con la primera y cerrada tras 30 s sin uso: en reposo no hay sockets ni despertares. La
+  primera consulta tras un reposo paga dos viajes de ida y vuelta extra (conexión TCP y TLS).
+- **Reloj:** TLS necesita la fecha correcta y una TV sin pila de reloj la toma de la red. Si el DNS
+  cifrado falla, `time.android.com`, `time.google.com` y `time.gstatic.com` se contestan en local
+  con las IP fijas publicadas de Google Public NTP, para que la hora se pueda corregir.
+- **Coste:** la librería pasa de 1,1 MB a 2,1 MB por arquitectura (TLS y raíces de Mozilla).
+- **Límite:** una red que bloquee el puerto 853 deja sin DNS; entonces se elige otro proveedor o se
+  desactiva la protección. DNS sobre HTTPS (puerto 443) lo evitaría, a costa de HTTP/2 completo.
 
 ## Apps permitidas, lo más limpias posible
 

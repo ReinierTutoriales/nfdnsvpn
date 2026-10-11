@@ -9,13 +9,13 @@ import java.net.Inet6Address
 import java.net.InetAddress
 
 /**
- * Watches the real network (usually the router): its resolvers, which allowed queries are
- * forwarded to, and whether it has IPv6. The app excludes itself from the VPN, so its default
- * network is the underlying one even while the tunnel is up.
+ * Watches the real network: whether it has IPv6, its resolvers (only to route them into the
+ * tunnel, so DNS sent straight to the router is filtered; they never answer anything) and
+ * Android's private DNS setting. The app excludes itself from the VPN, so its default network is
+ * the underlying one even while the tunnel is up.
  */
 class UpstreamDns(
     context: Context,
-    private val onServers: (List<String>) -> Unit,
     private val onPrivateDns: (String?) -> Unit,
 ) {
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
@@ -47,9 +47,6 @@ class UpstreamDns(
     }
 
     private fun update(properties: LinkProperties) {
-        // Scoped (link-local) resolvers cannot be written as plain addresses; the core skips them
-        // and falls back to Quad9 if nothing else is left.
-        onServers(properties.dnsServers.filterNot(ShieldVpnService::isVirtualAddress).mapNotNull { it.hostAddress })
         // Strict private DNS sends queries over TLS to the provider and skips our resolver.
         onPrivateDns(if (Build.VERSION.SDK_INT >= 28) properties.privateDnsServerName else null)
     }

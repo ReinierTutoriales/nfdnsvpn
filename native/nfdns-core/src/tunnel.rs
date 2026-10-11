@@ -12,6 +12,7 @@ use crate::filter::Filter;
 use crate::quic::{self, InitialReader, QuicPeek};
 use crate::route::{Verdict, classify, wrap_reply};
 use crate::sni::{self, Peek};
+use crate::upstream::Upstream;
 use futures::{SinkExt, StreamExt};
 use netstack_smoltcp::StackBuilder;
 use netstack_smoltcp::udp::UdpMsg;
@@ -30,13 +31,15 @@ use tokio::time::{Instant, timeout, timeout_at};
 
 const MAX_PACKET: usize = 65535;
 const MTU: usize = 1500;
-const UPSTREAM_TIMEOUT: Duration = Duration::from_millis(2500);
 /// Queries forwarded at once. A TV has a few dozen in flight at most; beyond this a flood is
 /// dropped (clients retry) instead of piling up tasks and buffers.
 const DNS_IN_FLIGHT: usize = 128;
-/// Largest UDP answer read back: the biggest EDNS size clients ask for (resolvers keep to 1232
-/// since DNS Flag Day 2020). 128 queries in flight hold 512 KiB at most.
-const DNS_ANSWER_MAX: usize = 4096;
+/// Time servers answered locally when no resolver answers. Encrypted DNS needs a correct clock
+/// (certificate dates) and a TV without a clock battery gets its time over the network: without
+/// this, a wrong clock would leave it with neither DNS nor a way to fix the time. Google Public
+/// NTP's documented anycast addresses (time.android.com is Google's too).
+const TIME_SERVERS: [&str; 3] = ["time.android.com", "time.google.com", "time.gstatic.com"];
+const GOOGLE_NTP: [[u8; 4]; 4] = [[216, 239, 35, 0], [216, 239, 35, 4], [216, 239, 35, 8], [216, 239, 35, 12]];
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Long enough for QUIC and game sessions between keepalives.
 const UDP_IDLE: Duration = Duration::from_secs(120);
@@ -69,10 +72,6 @@ const QUIC_PEEK_TIMEOUT: Duration = Duration::from_secs(1);
 const QUIC_PEEK_DATAGRAMS: usize = 8;
 const REFUSED_FLOW_IDLE: Duration = Duration::from_secs(30);
 
-/// Quad9, only when the network announces no resolver.
-const FALLBACK_UPSTREAM: [SocketAddr; 2] =
-    [SocketAddr::new(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 53), SocketAddr::new(IpAddr::V4(Ipv4Addr::new(149, 112, 112, 112)), 53)];
-
 #[derive(Default)]
 pub struct Stats {
     pub queries: AtomicU64,
@@ -81,6 +80,8 @@ pub struct Stats {
     pub udp_active: AtomicU64,
     /// QUIC flows refused because no server name could be read (the app falls back to TCP).
     pub quic_refused: AtomicU64,
+    /// Allowed queries no upstream resolver answered in time (a chosen TLS resolver unreachable).
+    pub dns_failed: AtomicU64,
     recent: Mutex<VecDeque<String>>,
 }
 
@@ -99,15 +100,16 @@ impl Stats {
         recent.truncate(RECENT_LIMIT);
     }
 
-    /// `queries,blocked,tcp,udp,quic_refused` then one recently blocked name per line, newest first.
+    /// `queries,blocked,tcp,udp,quic_refused,dns_failed` then one recently blocked name per line, newest first.
     pub fn encode(&self) -> String {
         let mut out = format!(
-            "{},{},{},{},{}",
+            "{},{},{},{},{},{}",
             self.queries.load(Ordering::Relaxed),
             self.blocked.load(Ordering::Relaxed),
             self.tcp_active.load(Ordering::Relaxed),
             self.udp_active.load(Ordering::Relaxed),
             self.quic_refused.load(Ordering::Relaxed),
+            self.dns_failed.load(Ordering::Relaxed),
         );
         for name in self.recent.lock().unwrap().iter() {
             out.push('\n');
@@ -156,7 +158,7 @@ pub struct Tunnel {
     fd: RawFd,
     filter: SharedFilter,
     intercepted: Arc<Vec<IpAddr>>,
-    upstream: Arc<Mutex<Vec<SocketAddr>>>,
+    upstream: Mutex<Arc<Upstream>>,
     stats: Arc<Stats>,
     apps: Arc<AppGate>,
     dns_slots: Arc<Semaphore>,
@@ -171,7 +173,7 @@ impl Tunnel {
             fd,
             filter: SharedFilter(Arc::new(RwLock::new(Arc::new(filter)))),
             intercepted: Arc::new(intercepted),
-            upstream: Arc::new(Mutex::new(Vec::new())),
+            upstream: Mutex::new(Arc::new(Upstream::Plain(Vec::new()))),
             stats: Arc::new(Stats::default()),
             apps: Arc::new(AppGate::default()),
             dns_slots: Arc::new(Semaphore::new(DNS_IN_FLIGHT)),
@@ -192,7 +194,12 @@ impl Tunnel {
 
     /// Resolvers of the real network; may be called at any time from any thread.
     pub fn set_upstream(&self, servers: Vec<SocketAddr>) {
-        *self.upstream.lock().unwrap() = servers;
+        self.set_upstream_to(Upstream::Plain(servers));
+    }
+
+    /// Plain resolvers or a chosen resolver over TLS; queries in flight finish on the old one.
+    pub fn set_upstream_to(&self, upstream: Upstream) {
+        *self.upstream.lock().unwrap() = Arc::new(upstream);
     }
 
     /// Apps (Linux uids) cut off the network entirely: their new TCP connections and UDP flows
@@ -296,10 +303,10 @@ impl Tunnel {
                 Verdict::Forward { query, name } => {
                     self.stats.queries.fetch_add(1, Ordering::Relaxed);
                     let Ok(slot) = self.dns_slots.clone().try_acquire_owned() else { continue };
-                    let servers = self.upstream.lock().unwrap().clone();
+                    let upstream = self.upstream.lock().unwrap().clone();
                     let (apps, stats) = (self.apps.clone(), self.stats.clone());
                     let forward =
-                        forward_dns(data.to_vec(), query, servers, to_tun.clone(), self.filter.current(), stats.clone(), apps.clone());
+                        forward_dns(data.to_vec(), query, upstream, to_tun.clone(), self.filter.current(), stats.clone(), apps.clone());
                     let flow = crate::packet::parse(data).map(|p| (SocketAddr::new(p.src, p.src_port), SocketAddr::new(p.dst, p.dst_port)));
                     tokio::spawn(async move {
                         let _slot = slot;
@@ -389,46 +396,36 @@ fn unspecified_for(address: &SocketAddr) -> SocketAddr {
 async fn forward_dns(
     request: Vec<u8>,
     query: Vec<u8>,
-    servers: Vec<SocketAddr>,
+    upstream: Arc<Upstream>,
     to_tun: mpsc::Sender<Vec<u8>>,
     filter: Arc<Filter>,
     stats: Arc<Stats>,
     apps: Arc<AppGate>,
 ) {
-    let servers = if servers.is_empty() { FALLBACK_UPSTREAM.to_vec() } else { servers };
-    let mut answer = vec![0u8; DNS_ANSWER_MAX];
-    for server in servers.iter().take(2) {
-        let Ok(socket) = UdpSocket::bind(unspecified_for(server)).await else { continue };
-        if socket.connect(server).await.is_err() || socket.send(&query).await.is_err() {
-            continue;
+    let Some(answer) = upstream.exchange(&query).await else {
+        stats.dns_failed.fetch_add(1, Ordering::Relaxed);
+        if let Some(question) = dns::parse_query(&query).filter(|q| TIME_SERVERS.contains(&q.name.as_str()))
+            && let Some(packet) = wrap_reply(&request, &dns::address_response(&query, &question, &GOOGLE_NTP, 60))
+        {
+            let _ = to_tun.send(packet).await;
         }
-        let deadline = Instant::now() + UPSTREAM_TIMEOUT;
-        loop {
-            match timeout_at(deadline, socket.recv(&mut answer)).await {
-                // Same transaction ID as the query, or it is not our answer.
-                Ok(Ok(n)) if n >= 2 && answer[..2] == query[..2] => {
-                    let cloaked = dns::cname_targets(&answer[..n]).into_iter().find(|name| filter.is_blocked(name));
-                    let reply = match (cloaked, dns::parse_query(&query)) {
-                        (Some(target), Some(question)) => {
-                            stats.blocked.fetch_add(1, Ordering::Relaxed);
-                            stats.remember(target);
-                            dns::blocked_response(&query, &question)
-                        }
-                        (None, Some(question)) => {
-                            apps.remember_answer(&question.name, &dns::answer_addresses(&answer[..n]));
-                            answer[..n].to_vec()
-                        }
-                        _ => answer[..n].to_vec(),
-                    };
-                    if let Some(packet) = wrap_reply(&request, &reply) {
-                        let _ = to_tun.send(packet).await;
-                    }
-                    return;
-                }
-                Ok(Ok(_)) => continue,
-                _ => break,
-            }
+        return;
+    };
+    let cloaked = dns::cname_targets(&answer).into_iter().find(|name| filter.is_blocked(name));
+    let reply = match (cloaked, dns::parse_query(&query)) {
+        (Some(target), Some(question)) => {
+            stats.blocked.fetch_add(1, Ordering::Relaxed);
+            stats.remember(target);
+            dns::blocked_response(&query, &question)
         }
+        (None, Some(question)) => {
+            apps.remember_answer(&question.name, &dns::answer_addresses(&answer));
+            answer
+        }
+        _ => answer,
+    };
+    if let Some(packet) = wrap_reply(&request, &reply) {
+        let _ = to_tun.send(packet).await;
     }
 }
 

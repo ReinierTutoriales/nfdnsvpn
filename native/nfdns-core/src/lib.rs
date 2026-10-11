@@ -13,6 +13,7 @@ pub mod quic;
 pub mod route;
 pub mod sni;
 pub mod tunnel;
+pub mod upstream;
 
 use filter::{Filter, FilterBuilder};
 use jni::EnvUnowned;
@@ -22,18 +23,6 @@ use jni::objects::{JClass, JIntArray, JObjectArray, JString};
 use jni::sys::{jboolean, jint, jlong};
 use std::net::{IpAddr, SocketAddr};
 use tunnel::Tunnel;
-
-const DNS_PORT: u16 = 53;
-
-/// Comma-separated addresses; a bare IP means port 53. Invalid entries are skipped.
-pub fn parse_servers(list: &str) -> Vec<SocketAddr> {
-    list.split(',')
-        .map(str::trim)
-        .filter_map(|entry| {
-            entry.parse::<SocketAddr>().ok().or_else(|| entry.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, DNS_PORT)))
-        })
-        .collect()
-}
 
 fn parse_addresses(list: &str) -> Vec<IpAddr> {
     list.split(',').filter_map(|entry| entry.trim().parse().ok()).collect()
@@ -204,7 +193,7 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
     unowned
         .with_env(|env| -> jni::errors::Result<()> {
             if let Some(t) = tunnel(handle) {
-                t.set_upstream(parse_servers(&servers.try_to_string(env)?));
+                t.set_upstream_to(upstream::Upstream::parse(&servers.try_to_string(env)?));
             }
             Ok(())
         })
@@ -398,23 +387,4 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
         _ => String::new(),
     };
     unowned.with_env(|env| -> jni::errors::Result<JString<'caller>> { env.new_string(activity) }).resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_server_lists() {
-        assert_eq!(
-            parse_servers("192.168.1.1, 2001:db8::1,[2001:db8::2]:5353,127.0.0.1:5300,garbage"),
-            vec![
-                "192.168.1.1:53".parse().unwrap(),
-                "[2001:db8::1]:53".parse().unwrap(),
-                "[2001:db8::2]:5353".parse().unwrap(),
-                "127.0.0.1:5300".parse().unwrap(),
-            ]
-        );
-        assert!(parse_servers("").is_empty());
-    }
 }

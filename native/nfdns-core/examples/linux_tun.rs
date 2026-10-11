@@ -1,5 +1,7 @@
 //! Runs the tunnel on a Linux TUN device, for the end-to-end test in scripts/e2e-linux.sh.
-//! Usage: linux_tun <tun name> <upstream ip[:port]> <list file> <intercepted ip,...>
+//! Usage: linux_tun <tun name> <upstream ip[:port] | tls://ip#name> <list file> <intercepted ip,...>
+//! `NFDNS_DOT_CA=<DER file>` also trusts that CA for DNS over TLS, and writing resolvers to
+//! `<list file>.upstream` switches to them while running.
 //! Prints the stats line (`queries,blocked,tcp,udp,quic_refused`) every second, and reloads the
 //! list (as the app's daily update does) when the file changes, printing `reloaded <rules>`.
 //! With `NFDNS_APPS_NETNS=<netns path>`, `NFDNS_BLOCK_UID=<uid>` and `NFDNS_WATCH_UID=<uid>`, those
@@ -7,8 +9,8 @@
 //! apps' `/proc/net` tables, the Linux counterpart of `getConnectionOwnerUid`.
 use nfdns::apps::{OwnerLookup, Protocol};
 use nfdns::filter::FilterBuilder;
-use nfdns::parse_servers;
 use nfdns::tunnel::Tunnel;
+use nfdns::upstream::Upstream;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -114,7 +116,12 @@ fn main() {
     };
     let intercepted = intercepted.split(',').filter_map(|s| s.parse().ok()).collect();
     let tunnel = Arc::new(Tunnel::new(open_tun(tun), load(list), intercepted));
-    tunnel.set_upstream(parse_servers(upstream));
+    let resolvers = |list: &str| match (Upstream::parse(list), std::env::var("NFDNS_DOT_CA")) {
+        // The e2e test's DNS-over-TLS server has a certificate from its own CA (DER file).
+        (Upstream::Tls(client), Ok(ca)) => Upstream::Tls(client.trusting(vec![std::fs::read(ca).expect("CA file").into()])),
+        (upstream, _) => upstream,
+    };
+    tunnel.set_upstream_to(resolvers(upstream));
     if let Ok(netns) = std::env::var("NFDNS_APPS_NETNS") {
         tunnel.set_owner_lookup(ProcLookup { netns, joined: false }).expect("lookup thread");
         let uid = |name: &str| std::env::var(name).ok().map(|uid| uid.parse::<u32>().expect("uid"));
@@ -123,9 +130,12 @@ fn main() {
     }
     let reporter = tunnel.clone();
     let list = list.clone();
+    // A changed `<list>.upstream` file replaces the resolvers, as choosing one in Options does.
+    let upstream_file = format!("{list}.upstream");
     std::thread::spawn(move || {
         let modified = |path: &str| std::fs::metadata(path).and_then(|m| m.modified()).ok();
         let mut seen = modified(&list);
+        let mut seen_upstream = modified(&upstream_file);
         loop {
             std::thread::sleep(Duration::from_secs(1));
             println!("stats {}", reporter.stats().encode().lines().next().unwrap_or_default());
@@ -134,6 +144,13 @@ fn main() {
                 seen = now;
                 reporter.set_filter(load(&list));
                 println!("reloaded {}", reporter.rule_count());
+            }
+            let now = modified(&upstream_file);
+            if now != seen_upstream {
+                seen_upstream = now;
+                let text = std::fs::read_to_string(&upstream_file).unwrap_or_default();
+                reporter.set_upstream_to(resolvers(text.trim()));
+                println!("upstream {}", text.trim());
             }
         }
     });

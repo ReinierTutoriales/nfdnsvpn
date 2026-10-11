@@ -46,6 +46,7 @@ class NativeCoreTest {
         val tunnel = NativeTunnel(filter, -1, listOf("10.111.0.1", "8.8.8.8", "not-an-ip"))
         try {
             tunnel.setUpstream(listOf("192.168.1.1", "2001:db8::1"))
+            tunnel.setUpstream(listOf("tls://1.1.1.1#cloudflare-dns.com"))
             val stats = tunnel.stats()
             assertNotNull(stats)
             assertEquals(0L, stats!!.queries)
@@ -104,10 +105,10 @@ class NativeCoreTest {
 
     @Test
     fun parsesStats() {
-        val stats = TunnelStats.parse("12,3,4,5,6\nads.example.com\ntracker.example.org")!!
-        assertEquals(listOf(12L, 3L, 4L, 5L, 6L), listOf(stats.queries, stats.blocked, stats.tcp, stats.udp, stats.quicRefused))
+        val stats = TunnelStats.parse("12,3,4,5,6,7\nads.example.com\ntracker.example.org")!!
+        assertEquals(listOf(12L, 3L, 4L, 5L, 6L, 7L), listOf(stats.queries, stats.blocked, stats.tcp, stats.udp, stats.quicRefused, stats.dnsFailed))
         assertEquals(listOf("ads.example.com", "tracker.example.org"), stats.recent)
         assertNull(TunnelStats.parse(""))
-        assertNull(TunnelStats.parse("1,2,3,4"))
+        assertNull(TunnelStats.parse("1,2,3,4,5"))
     }
 }

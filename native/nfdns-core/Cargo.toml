@@ -18,7 +18,11 @@ hkdf = "0.13.0"
 jni = "0.22.4"
 libc = "0.2"
 netstack-smoltcp = "0.2.4"
+# DNS over TLS to the chosen resolver: TLS 1.3 only, ring, Mozilla roots built in.
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
 sha2 = "0.11.0"
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring"] }
+webpki-roots = "1.0.9"
 tokio = { version = "1.53.2", features = ["rt", "net", "io-util", "time", "macros", "sync"] }
 
 [profile.release]

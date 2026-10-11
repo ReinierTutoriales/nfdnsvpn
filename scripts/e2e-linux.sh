@@ -73,6 +73,13 @@ gw ip tuntap add dev tun0 mode tun
 head -c 200000000 /dev/zero > "$WORK/big"
 echo "hello through the tunnel" > "$WORK/small"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=e2e" -keyout "$WORK/key.pem" -out "$WORK/cert.pem" 2>/dev/null
+# DNS over TLS: a private CA (trusted by the tunnel through NFDNS_DOT_CA) and a server
+# certificate for dns.e2e.
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=e2e CA" -keyout "$WORK/ca-key.pem" -out "$WORK/ca.pem" 2>/dev/null
+openssl x509 -in "$WORK/ca.pem" -outform der -out "$WORK/ca.der"
+openssl req -newkey rsa:2048 -nodes -subj "/CN=dns.e2e" -keyout "$WORK/dot-key.pem" -out "$WORK/dot.csr" 2>/dev/null
+printf 'subjectAltName=DNS:dns.e2e\n' > "$WORK/dot.ext"
+openssl x509 -req -in "$WORK/dot.csr" -CA "$WORK/ca.pem" -CAkey "$WORK/ca-key.pem" -CAcreateserial -days 1 -extfile "$WORK/dot.ext" -out "$WORK/dot.pem" 2>/dev/null
 cat > "$WORK/servers.py" <<'EOF'
 import functools, http.server, os, socket, ssl, struct, sys, threading
 def udp_echo(family, address):
@@ -148,6 +155,40 @@ threading.Thread(target=https, args=(8443,), daemon=True).start()
 threading.Thread(target=tcp_echo, daemon=True).start()
 threading.Thread(target=banner, daemon=True).start()
 threading.Thread(target=https, args=(9443,), daemon=True).start()
+def dot():
+    # DNS over TLS on 853: answers every A query with 192.0.2.53, so the checks can tell it
+    # apart from the plain fake DNS (192.0.2.1). Several queries per connection.
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(os.path.join(sys.argv[1], "dot.pem"), os.path.join(sys.argv[1], "dot-key.pem"))
+    s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("192.0.2.1", 853)); s.listen(64)
+    def read(c, n):
+        data = b""
+        while len(data) < n:
+            chunk = c.recv(n - len(data))
+            if not chunk: raise EOFError
+            data += chunk
+        return data
+    def serve(c):
+        with c:
+            try:
+                while True:
+                    q = read(c, struct.unpack(">H", read(c, 2))[0])
+                    end = 12
+                    while q[end] != 0: end += q[end] + 1
+                    answer = q[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00" + q[12:end + 5]
+                    answer += b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + socket.inet_aton("192.0.2.53")
+                    c.sendall(struct.pack(">H", len(answer)) + answer)
+            except (EOFError, OSError, ssl.SSLError):
+                pass
+    while True:
+        c, _ = s.accept()
+        try:
+            c = context.wrap_socket(c, server_side=True)
+        except (OSError, ssl.SSLError):
+            c.close(); continue
+        threading.Thread(target=serve, args=(c,), daemon=True).start()
+threading.Thread(target=dot, daemon=True).start()
 if socket.has_ipv6 and os.path.isdir("/proc/sys/net/ipv6"):
     threading.Thread(target=udp_echo, args=(socket.AF_INET6, "2001:db8:1::1"), daemon=True).start()
     threading.Thread(target=http_v6, daemon=True).start()
@@ -161,7 +202,7 @@ EOF
 srv "$PY" "$WORK/servers.py" "$WORK" > /dev/null 2>&1 & PIDS+=($!)
 srv python3 -m http.server 8080 --bind 0.0.0.0 --directory "$WORK" >/dev/null 2>&1 & PIDS+=($!)
 printf '||doubleclick.net^\n192.0.2.9\n' > "$WORK/list.txt"
-ip netns exec "$GW" env NFDNS_BLOCK_UID="$(id -u "$BLOCKED_USER")" NFDNS_WATCH_UID="$(id -u "$WATCHED_USER")" NFDNS_APPS_NETNS="/var/run/netns/$TV" "$TUNNEL_BIN" tun0 192.0.2.1 "$WORK/list.txt" 10.111.0.1,8.8.8.8 > "$WORK/tunnel.log" 2>&1 &
+ip netns exec "$GW" env NFDNS_DOT_CA="$WORK/ca.der" NFDNS_BLOCK_UID="$(id -u "$BLOCKED_USER")" NFDNS_WATCH_UID="$(id -u "$WATCHED_USER")" NFDNS_APPS_NETNS="/var/run/netns/$TV" "$TUNNEL_BIN" tun0 192.0.2.1 "$WORK/list.txt" 10.111.0.1,8.8.8.8 > "$WORK/tunnel.log" 2>&1 &
 TUNNEL_PID=$!   # ip netns exec execs the binary, so this is the tunnel itself
 PIDS+=("$TUNNEL_PID")
 sleep 1
@@ -330,6 +371,21 @@ check "App vigilada: IP dada por nuestro DNS" "hello through the tunnel" "$(watc
 check "App vigilada: nombre legible y permitido (SNI)" "hello through the tunnel" "$(watched_app curl -sk --max-time 5 --resolve allowed.example:8443:192.0.2.3 https://allowed.example:8443/small)"
 check "App vigilada: dominio bloqueado (SNI)" "blocked (curl [35][56])" "$(watched_app curl -sk --max-time 5 --resolve ads.doubleclick.net:8443:192.0.2.3 https://ads.doubleclick.net:8443/small >/dev/null 2>&1 && echo served || echo "blocked (curl $?)")"
 check "Otra app sí llega a esa IP fija" "hello through the tunnel" "$(app curl -s --max-time 5 http://192.0.2.3:8080/small)"
+# Chosen resolver over TLS: answers come from it (192.0.2.53, not the plain 192.0.2.1); a
+# certificate for another name or an unreachable resolver gives no answer, never plain DNS.
+use_upstream() { echo "$1" > "$WORK/list.txt.upstream"; sleep 2; }
+use_upstream "tls://192.0.2.1#dns.e2e"
+check "DNS por TLS al resolvedor elegido" "192.0.2.53" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 example.org)"
+check "DNS por TLS: el DNS forzado de la app también va cifrado" "192.0.2.53" "$(app "$PY" "$WORK/client.py" dns 203.0.113.53 example.net)"
+check "DNS por TLS: bloqueados se siguen contestando en local" "0.0.0.0" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 pubads.g.doubleclick.net)"
+use_upstream "tls://192.0.2.1#otro.e2e"
+check "DNS por TLS: certificado de otro nombre rechazado" "no answer" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 example.com 2>/dev/null || echo 'no answer')"
+use_upstream "tls://192.0.2.1:8853#dns.e2e"
+check "DNS por TLS caído: sin vuelta al DNS en claro" "no answer" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 example.edu 2>/dev/null || echo 'no answer')"
+# The clock must stay fixable when encrypted DNS fails (certificates need the right date).
+check "DNS por TLS caído: servidor de hora contestado en local" "216.239.35.12" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 time.android.com)"
+use_upstream "192.0.2.1"
+check "Vuelta al DNS de la red" "192.0.2.1" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 example.org)"
 check "HTTP bloqueado por Host" "blocked*" "$(out=$(app curl -s --max-time 5 -H 'Host: ads.doubleclick.net' http://192.0.2.1:8080/small); [[ -z "$out" ]] && echo blocked || echo "served: $out")"
 
 # Five bursts of 50 parallel connections: all must succeed, and memory must not keep growing

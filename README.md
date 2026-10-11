@@ -27,7 +27,11 @@ Dos modos, elegibles con el botón **Modo** de la pantalla:
 
 Lo que hacen ambos modos:
 
-- Filtra el DNS de **todas las apps**: los dominios bloqueados reciben `0.0.0.0` / `::`.
+- Filtra el DNS de **todas las apps** en el propio dispositivo: los dominios bloqueados reciben
+  `0.0.0.0` / `::` sin salir de la TV.
+- Lo permitido se pregunta **siempre cifrado** (DNS sobre TLS) al proveedor elegido en Opciones
+  (por defecto Quad9 + Cloudflare). El router y la operadora nunca se usan como DNS ni ven las
+  consultas, y no hay vuelta al DNS en claro.
 - También filtra a las apps que usan DNS público fijo (Google, Cloudflare, Quad9, OpenDNS,
   AdGuard): esas IPs se envían al túnel, y el DNS cifrado (DoT/DoH) hacia ellas se corta para que
   la app vuelva al DNS normal.
@@ -38,7 +42,7 @@ Lo que hacen ambos modos:
   y 3400 IPs, unos 7,6 MB de RAM. Bloquea los 131 dominios del test de d3ward y ninguno de los 50
   dominios críticos de TV medidos.
 - Pantalla mínima: un botón grande de activar/desactivar, el estado y el número de bloqueos.
-- **Opciones** (opcional): cambiar de modo, permitir un dominio bloqueado eligiéndolo con el
+- **Opciones** (opcional): elegir el servidor DNS cifrado, cambiar de modo, permitir un dominio bloqueado eligiéndolo con el
   mando, elegir listas (incluidas HaGeZi Pro, más ligera, OISD small/big y las de uBlock Origin, de las que se usan sus
   reglas de dominio), quitar dominios permitidos, excluir apps que fallen, vigilar apps y bloquear los dominios que contactan, dejar apps sin internet, arranque al encender
   y estado/consumo.
@@ -100,7 +104,7 @@ cargo run --release --example measure -- lista1.txt lista2.txt
 | `native/vendor/netstack-smoltcp` | Pila TCP/IP (copia con un parche de consumo en reposo) |
 | `native/nfdns-core` | Núcleo Rust: clasificador, DNS (con CNAME), SNI/Host, QUIC Initial, filtro de dominios, apps sin internet, túnel (pila TCP/IP y relay), JNI |
 | `scripts/e2e-linux.sh` | Prueba de extremo a extremo del túnel en *network namespaces* |
-| `app/src/main/java/.../vpn` | `ShieldVpnService` (TUN y rutas de cada modo), DNS de la red, ajustes, estado |
+| `app/src/main/java/.../vpn` | `ShieldVpnService` (TUN y rutas de cada modo), proveedores DNS, ajustes, estado |
 | `app/src/main/java/.../lists` | Descarga y caché de listas |
 | `app/src/main/java/.../ui` | Pantalla de un botón y Opciones, para el mando |
 | `app/src/main/assets/video-ads.txt` | Lista propia de servidores de anuncios de vídeo |

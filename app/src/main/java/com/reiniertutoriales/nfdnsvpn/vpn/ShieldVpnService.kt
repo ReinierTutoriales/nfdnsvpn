@@ -28,7 +28,6 @@ import java.net.InetAddress
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Local VPN. The packet loop runs in the Rust core ([NativeTunnel]) in both modes:
@@ -45,8 +44,8 @@ class ShieldVpnService : VpnService() {
         const val ACTION_RESTART = "com.reiniertutoriales.nfdnsvpn.RESTART"
         /** Applies a list or allowlist change without dropping connections. */
         const val ACTION_RELOAD = "com.reiniertutoriales.nfdnsvpn.RELOAD"
-        /** Applies a blocked-app change at once (no filter rebuild). Watched apps need a restart. */
-        const val ACTION_BLOCKED_APPS = "com.reiniertutoriales.nfdnsvpn.BLOCKED_APPS"
+        /** Applies blocked apps and the DNS resolver at once (no filter rebuild). Watched apps need a restart. */
+        const val ACTION_APPLY = "com.reiniertutoriales.nfdnsvpn.APPLY"
         private const val CHANNEL = "shield"
         private const val NOTIFICATION_ID = 1
 
@@ -90,7 +89,7 @@ class ShieldVpnService : VpnService() {
         fun stop(context: Context) = send(context, ACTION_STOP)
         fun restart(context: Context) = send(context, ACTION_RESTART)
         fun reload(context: Context) = send(context, ACTION_RELOAD)
-        fun applyBlockedApps(context: Context) = send(context, ACTION_BLOCKED_APPS)
+        fun apply(context: Context) = send(context, ACTION_APPLY)
 
         private fun send(context: Context, action: String) {
             context.startService(Intent(context, ShieldVpnService::class.java).setAction(action))
@@ -125,10 +124,17 @@ class ShieldVpnService : VpnService() {
                 return START_NOT_STICKY
             }
             ACTION_RESTART -> shutdown()
-            ACTION_RELOAD, ACTION_BLOCKED_APPS -> {
+            ACTION_RELOAD, ACTION_APPLY -> {
                 val jobs = maintenance
                 val reload = intent.action == ACTION_RELOAD
-                val job = Runnable { if (reload) reloadFilter() else tunnel?.let(::applyAppRules) }
+                val job = Runnable {
+                    if (reload) {
+                        reloadFilter()
+                    } else {
+                        tunnel?.let(::applyAppRules)
+                        tunnel?.let(::applyDns)
+                    }
+                }
                 when {
                     jobs != null -> jobs.execute(job)
                     // Not running: the next start loads the current settings anyway. Do not leave
@@ -213,11 +219,7 @@ class ShieldVpnService : VpnService() {
         var jobs: ScheduledExecutorService? = null
         try {
             filter = loadFilter()
-            val servers = AtomicReference<List<String>>(emptyList())
-            upstream = UpstreamDns(this, onServers = { list ->
-                servers.set(list)
-                tunnel?.setUpstream(list)
-            }, onPrivateDns = { ShieldState.privateDnsStrict = it })
+            upstream = UpstreamDns(this, onPrivateDns = { ShieldState.privateDnsStrict = it })
             if (stopping) return
             tun = establish(fullTunnel, upstream.hasIpv6, upstream.initialServers) ?: throw IOException(getString(R.string.error_no_permission))
             // Without "Block connections without VPN", traffic flows unfiltered whenever this
@@ -228,7 +230,7 @@ class ShieldVpnService : VpnService() {
             // Published before the first push, so a network change in between is not lost.
             tunnel = current
             ShieldState.tunnel = current
-            current.setUpstream(servers.get())
+            applyDns(current)
             applyAppRules(current)
             if (stopping) return
             jobs = Executors.newSingleThreadScheduledExecutor().apply {
@@ -272,6 +274,11 @@ class ShieldVpnService : VpnService() {
         } catch (e: Exception) {
             Log.e(TAG, "Filter reload failed; the previous filter stays in use", e)
         }
+    }
+
+    /** The chosen resolvers, over TLS. The network's own are never used. */
+    private fun applyDns(target: NativeTunnel) {
+        target.setUpstream(ShieldSettings.chosenDns(this))
     }
 
     /**

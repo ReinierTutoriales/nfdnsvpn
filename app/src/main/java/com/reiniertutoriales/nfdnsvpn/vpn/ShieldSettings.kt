@@ -14,6 +14,8 @@ object ShieldSettings {
     private const val BLOCKED_APPS = "blockedApps"
     private const val WATCHED_APPS = "watchedApps"
     private const val BLOCKED_DOMAINS = "blockedDomains"
+    private const val DNS_PROVIDER = "dnsProvider"
+    private const val CUSTOM_DNS = "customDns"
     private const val START_ON_BOOT = "startOnBoot"
     private const val WANT_RUNNING = "wantRunning"
     private const val ASKED_TO_KEEP_RUNNING = "askedToKeepRunning"
@@ -89,6 +91,19 @@ object ShieldSettings {
         prefs(context).edit { putStringSet(BLOCKED_DOMAINS, domains) }
         if (blocked) setDomainAllowed(context, domain, false)
     }
+
+    /** Resolver for every allowed query (see [DnsProviders]). */
+    fun dnsProvider(context: Context): String = prefs(context).getString(DNS_PROVIDER, DnsProviders.DEFAULT)!!
+
+    fun customDns(context: Context): String = prefs(context).getString(CUSTOM_DNS, "")!!
+
+    fun setDnsProvider(context: Context, id: String, custom: String = customDns(context)) = prefs(context).edit {
+        putString(DNS_PROVIDER, id)
+        putString(CUSTOM_DNS, custom)
+    }
+
+    /** The chosen resolvers for the core, always encrypted. */
+    fun chosenDns(context: Context): List<String> = DnsProviders.servers(dnsProvider(context), customDns(context))
 
     fun startOnBoot(context: Context) = prefs(context).getBoolean(START_ON_BOOT, true)
 

@@ -159,36 +159,45 @@ pub fn answer_addresses(message: &[u8]) -> Vec<(std::net::IpAddr, u32)> {
 /// Answer for a blocked name: `0.0.0.0` for A, `::` for AAAA and an empty NOERROR answer for
 /// every other type (HTTPS/SVCB included, so no record hints at the real servers).
 pub fn blocked_response(query: &[u8], question: &Question) -> Vec<u8> {
-    response(query, question, 0)
+    let unspecified: &[u8] = match (question.qclass, question.qtype) {
+        (CLASS_IN, TYPE_A) => &[0; 4],
+        (CLASS_IN, TYPE_AAAA) => &[0; 16],
+        _ => return response(query, question, 0, &[], BLOCKED_TTL),
+    };
+    response(query, question, 0, &[unspecified], BLOCKED_TTL)
+}
+
+/// Local answer with these IPv4 addresses for an A query; any other type gets an empty answer.
+pub fn address_response(query: &[u8], question: &Question, addresses: &[[u8; 4]], ttl: u32) -> Vec<u8> {
+    let records: Vec<&[u8]> = match (question.qclass, question.qtype) {
+        (CLASS_IN, TYPE_A) => addresses.iter().map(|a| &a[..]).collect(),
+        _ => Vec::new(),
+    };
+    response(query, question, 0, &records, ttl)
 }
 
 /// "No such domain": the answer that tells Firefox not to turn on its own DNS over HTTPS.
 pub fn nxdomain_response(query: &[u8], question: &Question) -> Vec<u8> {
-    response(query, question, RCODE_NXDOMAIN)
+    response(query, question, RCODE_NXDOMAIN, &[], 0)
 }
 
-fn response(query: &[u8], question: &Question, rcode: u16) -> Vec<u8> {
-    let rdata: &[u8] = match (rcode, question.qclass, question.qtype) {
-        (0, CLASS_IN, TYPE_A) => &[0; 4],
-        (0, CLASS_IN, TYPE_AAAA) => &[0; 16],
-        _ => &[],
-    };
-    let answers: u16 = if rdata.is_empty() { 0 } else { 1 };
-    let mut out = Vec::with_capacity(question.end + 16 + rdata.len());
+/// Answer with the question and one record of the question's type per `rdata`.
+fn response(query: &[u8], question: &Question, rcode: u16, records: &[&[u8]], ttl: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(question.end + records.iter().map(|r| 12 + r.len()).sum::<usize>());
     out.extend_from_slice(&query[0..2]); // ID
     let request_flags = read_u16(query, 2).unwrap_or(0);
     // QR=1, same opcode and RD, RA=1, and the given RCODE.
     let flags = 0x8000 | (request_flags & 0x7900) | 0x0080 | rcode;
     out.extend_from_slice(&flags.to_be_bytes());
     out.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT
-    out.extend_from_slice(&answers.to_be_bytes()); // ANCOUNT
+    out.extend_from_slice(&(records.len() as u16).to_be_bytes()); // ANCOUNT
     out.extend_from_slice(&[0, 0, 0, 0]); // NSCOUNT, ARCOUNT (EDNS is dropped)
     out.extend_from_slice(&query[HEADER_LEN..question.end]);
-    if answers == 1 {
+    for rdata in records {
         out.extend_from_slice(&[0xC0, HEADER_LEN as u8]); // pointer to the question name
         out.extend_from_slice(&question.qtype.to_be_bytes());
         out.extend_from_slice(&CLASS_IN.to_be_bytes());
-        out.extend_from_slice(&BLOCKED_TTL.to_be_bytes());
+        out.extend_from_slice(&ttl.to_be_bytes());
         out.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
         out.extend_from_slice(rdata);
     }
@@ -314,6 +323,17 @@ mod tests {
         assert_eq!(read_u16(&r, 6), Some(1));
         assert_eq!(&r[r.len() - 18..r.len() - 16], &[0, 16]);
         assert!(r[r.len() - 16..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn answers_with_local_addresses() {
+        let query = build_query(4, "time.google.com", TYPE_A);
+        let q = parse_query(&query).unwrap();
+        let r = address_response(&query, &q, &[[216, 239, 35, 0], [216, 239, 35, 4]], 300);
+        assert_eq!(&r[6..8], &[0, 2]);
+        assert_eq!(answer_addresses(&r), vec![("216.239.35.0".parse().unwrap(), 300), ("216.239.35.4".parse().unwrap(), 300)]);
+        let aaaa = build_query(4, "time.google.com", TYPE_AAAA);
+        assert!(answer_addresses(&address_response(&aaaa, &parse_query(&aaaa).unwrap(), &[[1, 2, 3, 4]], 300)).is_empty());
     }
 
     #[test]

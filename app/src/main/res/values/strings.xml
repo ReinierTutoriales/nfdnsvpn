@@ -20,6 +20,15 @@
     <string name="settings_protection">Protección</string>
     <string name="settings_full_mode">Modo completo: todo el tráfico pasa por el filtro (recomendado)</string>
     <string name="settings_full_mode_note">Desactivado, solo se filtra el DNS: consume menos, pero una app con DNS propio podría saltárselo.</string>
+    <string name="settings_dns">Servidor DNS</string>
+    <string name="settings_dns_note">El filtro está en la TV: lo bloqueado nunca sale. Lo permitido se pregunta siempre cifrado (DNS sobre TLS) a quien elijas aquí; el router y la operadora no lo ven ni pueden cambiarlo, y nunca se usan como DNS. Si el elegido no responde, no se usa otro en claro. Cualquier otro DNS que intente una app se bloquea o se desvía a este.</string>
+    <string name="dns_custom">Personalizado: %1$s</string>
+    <string name="dns_chosen">✓ %1$s</string>
+    <string name="dns_custom_title">DNS personalizado (cifrado)</string>
+    <string name="dns_custom_hint">Formato tls://IP#nombre del certificado, separados por comas. Ejemplo: tls://9.9.9.9#dns.quad9.net</string>
+    <string name="dns_custom_invalid">Formato no válido: tls://IP#nombre</string>
+    <string name="settings_dns_failed">Consultas sin respuesta del servidor DNS: %1$d</string>
+    <string name="warning_dns_failing">El servidor DNS elegido no responde: cámbialo en Opciones › Servidor DNS.</string>
     <string name="action_allow">Permitir un dominio bloqueado…</string>
     <string name="allow_title">¿Qué dominio quieres permitir?</string>
     <string name="allow_hint">Se permitirá también en sus subdominios. Puedes quitarlo aquí mismo.</string>

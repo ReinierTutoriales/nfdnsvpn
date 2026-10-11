@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
@@ -27,11 +28,19 @@ import java.text.NumberFormat
  * consent, then to be left running); everything else has working defaults, so Options is optional.
  */
 class MainActivity : ComponentActivity() {
+    private companion object {
+        /** A resolver that failed within this time still shows the warning. */
+        const val DNS_WARNING_MS = 30_000L
+    }
+
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var toggle: Button
     private lateinit var status: TextView
     private lateinit var stats: TextView
     private lateinit var warning: TextView
+    /** Unanswered DNS queries at the last refresh, and when that number last grew. */
+    private var dnsFailed = -1L
+    private var dnsFailingAt = 0L
 
     private val vpnConsent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) turnOn() else ShieldState.error = getString(R.string.error_no_permission)
@@ -113,6 +122,12 @@ class MainActivity : ComponentActivity() {
             }
         )
         val counters = ShieldState.stats()
+        val now = SystemClock.elapsedRealtime()
+        counters?.dnsFailed?.let { failed ->
+            if (dnsFailed >= 0 && failed > dnsFailed) dnsFailingAt = now
+            dnsFailed = failed
+        }
+        val dnsFailing = phase == ShieldState.Phase.RUNNING && dnsFailingAt > 0 && now - dnsFailingAt < DNS_WARNING_MS
         stats.text = if (phase == ShieldState.Phase.RUNNING && counters != null)
             getString(R.string.blocked_count, NumberFormat.getIntegerInstance().format(counters.blocked)) else ""
 
@@ -120,6 +135,7 @@ class MainActivity : ComponentActivity() {
         val problems = listOfNotNull(
             ShieldState.error?.let { getString(R.string.error_prefix, it) },
             ShieldState.privateDnsStrict?.let { getString(R.string.warning_private_dns, it) },
+            getString(R.string.warning_dns_failing).takeIf { dnsFailing },
         )
         warning.visibility = if (problems.isEmpty()) View.GONE else View.VISIBLE
         warning.text = problems.joinToString("\n\n")

@@ -18,6 +18,14 @@ for abi in "$@"; do
   t="${triple[$abi]}"
   env_name="CARGO_TARGET_$(echo "$t" | tr '[:lower:]-' '[:upper:]_')_LINKER"
   export "$env_name=$toolchain/${clang[$abi]}$api-clang"
+  # C code of dependencies (ring, for TLS) is compiled with the same NDK clang and archiver.
+  cc_suffix="$(echo "$t" | tr '-' '_')"
+  export "CC_$cc_suffix=$toolchain/${clang[$abi]}$api-clang"
+  export "AR_$cc_suffix=$toolchain/llvm-ar"
+  # C code of dependencies (ring, for TLS) is compiled with the same NDK clang and archiver.
+  cc_suffix="$(echo "$t" | tr '-' '_')"
+  export "CC_$cc_suffix=$toolchain/${clang[$abi]}$api-clang"
+  export "AR_$cc_suffix=$toolchain/llvm-ar"
   cargo build --release --locked --target "$t"
   mkdir -p "$out/$abi"
   cp "target/$t/release/libnfdns.so" "$out/$abi/"

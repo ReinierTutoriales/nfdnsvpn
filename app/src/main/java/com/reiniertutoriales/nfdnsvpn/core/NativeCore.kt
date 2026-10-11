@@ -31,7 +31,7 @@ object NativeCore {
     @JvmStatic external fun nativeTunnelCreate(filter: Long, fd: Int, intercepted: String): Long
     /** Takes ownership of [filter] and puts it in use at once (list update, allowlist change). */
     @JvmStatic external fun nativeTunnelSetFilter(tunnel: Long, filter: Long)
-    /** Comma-separated resolvers of the real network; a bare IP means port 53. */
+    /** Comma-separated resolvers: `IP[:port]` plain, or `tls://IP[:port]#name` over TLS. */
     @JvmStatic external fun nativeTunnelSetUpstream(tunnel: Long, servers: String)
     /** Apps (uids) cut off the network entirely; asks [ConnectionOwner] who owns each new flow. */
     @JvmStatic external fun nativeTunnelSetBlockedApps(tunnel: Long, uids: IntArray)
@@ -42,7 +42,7 @@ object NativeCore {
     /** Blocks until [nativeTunnelStop]; empty string, or the error that ended the tunnel. */
     @JvmStatic external fun nativeTunnelRun(tunnel: Long): String
     @JvmStatic external fun nativeTunnelStop(tunnel: Long)
-    /** `queries,blocked,tcp,udp,quic_refused` followed by recently blocked names, one per line. */
+    /** `queries,blocked,tcp,udp,quic_refused,dns_failed` followed by recently blocked names, one per line. */
     @JvmStatic external fun nativeTunnelStats(tunnel: Long): String
     @JvmStatic external fun nativeTunnelFree(tunnel: Long)
 }
@@ -54,14 +54,16 @@ class TunnelStats(
     val udp: Long,
     /** QUIC flows without a readable server name, refused so the app falls back to TCP. */
     val quicRefused: Long,
+    /** Allowed queries no resolver answered in time (a chosen TLS resolver unreachable). */
+    val dnsFailed: Long,
     val recent: List<String>,
 ) {
     companion object {
         fun parse(encoded: String): TunnelStats? {
             val lines = encoded.split('\n')
             val numbers = lines.first().split(',').mapNotNull(String::toLongOrNull)
-            if (numbers.size != 5) return null
-            return TunnelStats(numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], lines.drop(1).filter(String::isNotEmpty))
+            if (numbers.size != 6) return null
+            return TunnelStats(numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5], lines.drop(1).filter(String::isNotEmpty))
         }
     }
 }

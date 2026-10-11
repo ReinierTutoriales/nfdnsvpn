@@ -14,6 +14,7 @@ import android.util.TypedValue
 import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -22,6 +23,7 @@ import androidx.activity.ComponentActivity
 import androidx.core.content.ContextCompat
 import com.reiniertutoriales.nfdnsvpn.R
 import com.reiniertutoriales.nfdnsvpn.lists.ListRepository
+import com.reiniertutoriales.nfdnsvpn.vpn.DnsProviders
 import com.reiniertutoriales.nfdnsvpn.vpn.ShieldSettings
 import com.reiniertutoriales.nfdnsvpn.vpn.ShieldState
 import com.reiniertutoriales.nfdnsvpn.vpn.ShieldVpnService
@@ -35,7 +37,8 @@ import java.util.Date
 class SettingsActivity : ComponentActivity() {
     private lateinit var content: LinearLayout
     private var filterChanged = false
-    private var blockedAppsChanged = false
+    /** Blocked apps or the DNS resolver changed: applied at once, without a restart. */
+    private var applyNeeded = false
     /** Mode or app exclusions changed: routes are fixed per session, so the tunnel restarts. */
     private var restartNeeded = false
 
@@ -58,11 +61,11 @@ class SettingsActivity : ComponentActivity() {
             if (restartNeeded) ShieldVpnService.restart(this)
             else {
                 if (filterChanged) ShieldVpnService.reload(this)
-                if (blockedAppsChanged) ShieldVpnService.applyBlockedApps(this)
+                if (applyNeeded) ShieldVpnService.apply(this)
             }
         }
         filterChanged = false
-        blockedAppsChanged = false
+        applyNeeded = false
         restartNeeded = false
     }
 
@@ -78,6 +81,17 @@ class SettingsActivity : ComponentActivity() {
         }
         note(R.string.settings_full_mode_note)
         button(getString(R.string.action_allow)) { onAllowDomain() }
+
+        section(R.string.settings_dns)
+        note(R.string.settings_dns_note)
+        val chosen = ShieldSettings.dnsProvider(this)
+        val choices = DnsProviders.ALL.map { it.id to it.name } +
+            (DnsProviders.CUSTOM to getString(R.string.dns_custom, ShieldSettings.customDns(this).ifEmpty { "…" }))
+        for ((id, name) in choices) {
+            button(if (id == chosen) getString(R.string.dns_chosen, name) else name) {
+                if (id == DnsProviders.CUSTOM) onCustomDns() else chooseDns(id)
+            }
+        }
         if (!ShieldState.lockdown) {
             note(R.string.settings_lockdown_note)
             button(getString(R.string.settings_lockdown_open)) {
@@ -145,7 +159,7 @@ class SettingsActivity : ComponentActivity() {
                 checkbox(label, packageName in blocked) { checked ->
                     ShieldSettings.setAppBlocked(this, packageName, checked)
                     // An excluded app bypasses the tunnel: it has to come back in first.
-                    if (packageName in ShieldSettings.excludedApps(this)) restartNeeded = true else blockedAppsChanged = true
+                    if (packageName in ShieldSettings.excludedApps(this)) restartNeeded = true else applyNeeded = true
                 }
             }
 
@@ -180,9 +194,36 @@ class SettingsActivity : ComponentActivity() {
         val counters = ShieldState.stats()
         if (counters != null) {
             lines += getString(R.string.settings_counters, counters.queries, counters.blocked, counters.tcp, counters.udp, counters.quicRefused)
+            lines += getString(R.string.settings_dns_failed, counters.dnsFailed)
             lines += getString(R.string.usage, Debug.getPss() / 1024, Process.getElapsedCpuTime() / 1000)
         }
         return lines.joinToString("\n")
+    }
+
+    private fun chooseDns(id: String, custom: String = ShieldSettings.customDns(this)) {
+        ShieldSettings.setDnsProvider(this, id, custom)
+        applyNeeded = true
+        build()
+    }
+
+    /** A resolver of the user's own, over TLS too: typed once, with the remote's keyboard. */
+    private fun onCustomDns() {
+        val input = EditText(this).apply {
+            setText(ShieldSettings.customDns(this@SettingsActivity))
+            hint = "tls://9.9.9.9#dns.quad9.net"
+            isSingleLine = true
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.dns_custom_title)
+            .setMessage(R.string.dns_custom_hint)
+            .setView(input)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val text = input.text.toString().trim()
+                if (DnsProviders.parseCustom(text) != null) chooseDns(DnsProviders.CUSTOM, text)
+                else Toast.makeText(this, R.string.dns_custom_invalid, Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     /** Allowlists one of the recently blocked names, picked with the remote (no typing on a TV). */
