@@ -6,7 +6,7 @@
 //! relayed through an ordinary socket. Those sockets do not loop back into the tunnel because the
 //! app excludes itself from the VPN (`addDisallowedApplication`).
 
-use crate::apps::{AppGate, OwnerLookup, Protocol};
+use crate::apps::{AppGate, AppRule, OwnerLookup, Protocol};
 use crate::dns;
 use crate::filter::Filter;
 use crate::quic::{self, InitialReader, QuicPeek};
@@ -193,6 +193,17 @@ impl Tunnel {
         self.apps.set_blocked(uids);
     }
 
+    /// Watched apps (Linux uids): they may only reach readable, allowed names or addresses our
+    /// DNS gave out. Takes effect only once a lookup is installed.
+    pub fn set_watched_apps(&self, uids: impl IntoIterator<Item = u32>) {
+        self.apps.set_watched(uids);
+    }
+
+    /// Recent destinations of a watched app: `1<TAB>name` refused, `0<TAB>name` allowed.
+    pub fn app_activity(&self, uid: u32) -> String {
+        self.apps.activity(uid)
+    }
+
     pub fn has_owner_lookup(&self) -> bool {
         self.apps.has_lookup()
     }
@@ -274,19 +285,25 @@ impl Tunnel {
                     }
                     let _ = to_tun.try_send(packet);
                 }
-                Verdict::Forward { query, .. } => {
+                Verdict::Forward { query, name } => {
                     self.stats.queries.fetch_add(1, Ordering::Relaxed);
                     let servers = self.upstream.lock().unwrap().clone();
-                    let forward = forward_dns(data.to_vec(), query, servers, to_tun.clone(), self.filter.current(), self.stats.clone());
                     let (apps, stats) = (self.apps.clone(), self.stats.clone());
+                    let forward =
+                        forward_dns(data.to_vec(), query, servers, to_tun.clone(), self.filter.current(), stats.clone(), apps.clone());
                     let flow = crate::packet::parse(data).map(|p| (SocketAddr::new(p.src, p.src_port), SocketAddr::new(p.dst, p.dst_port)));
                     tokio::spawn(async move {
-                        // An app with its own resolver: a blocked one gets no answer either.
-                        if let Some((local, remote)) = flow
-                            && apps.blocks(Protocol::Udp, local, remote).await
-                        {
-                            stats.blocked.fetch_add(1, Ordering::Relaxed);
-                            return;
+                        // Apps that ask their own resolver: a blocked one gets no answer, and a
+                        // watched one's names are noted (the system resolver's are not theirs).
+                        if let Some((local, remote)) = flow {
+                            match apps.rule(Protocol::Udp, local, remote).await {
+                                AppRule::Blocked => {
+                                    stats.blocked.fetch_add(1, Ordering::Relaxed);
+                                    return;
+                                }
+                                AppRule::Watched(uid) if !name.is_empty() => apps.record(uid, &name, false),
+                                _ => {}
+                            }
                         }
                         forward.await;
                     });
@@ -364,6 +381,7 @@ async fn forward_dns(
     to_tun: mpsc::Sender<Vec<u8>>,
     filter: Arc<Filter>,
     stats: Arc<Stats>,
+    apps: Arc<AppGate>,
 ) {
     let servers = if servers.is_empty() { FALLBACK_UPSTREAM.to_vec() } else { servers };
     let mut answer = vec![0u8; MAX_PACKET];
@@ -384,6 +402,10 @@ async fn forward_dns(
                             stats.remember(target);
                             dns::blocked_response(&query, &question)
                         }
+                        (None, Some(question)) => {
+                            apps.remember_answer(&question.name, &dns::answer_addresses(&answer[..n]));
+                            answer[..n].to_vec()
+                        }
                         _ => answer[..n].to_vec(),
                     };
                     if let Some(packet) = wrap_reply(&request, &reply) {
@@ -403,39 +425,71 @@ async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: SharedFi
         let (filter, stats, apps) = (filter.current(), stats.clone(), apps.clone());
         tokio::spawn(async move {
             let _active = Active::new(&stats.tcp_active);
+            let rule = apps.rule(Protocol::Tcp, local, remote).await;
             // Before connecting: a blocked app's server never even sees a SYN.
-            if apps.blocks(Protocol::Tcp, local, remote).await {
+            if rule == AppRule::Blocked {
                 stats.blocked.fetch_add(1, Ordering::Relaxed);
                 return;
             }
+            // A watched app's unknown address is only reached once the app shows an allowed name.
+            let resolved = match rule {
+                AppRule::Watched(_) => apps.resolved_name(remote.ip()),
+                _ => None,
+            };
+            let connect_first = !matches!(rule, AppRule::Watched(_)) || resolved.is_some();
             let (mut app_read, app_write) = tokio::io::split(inbound);
             // The real connection opens while the app's first bytes are inspected, and whatever
             // the server sends goes to the app at once: protocols where the server speaks first
             // (banners) get no delay. Only the app's bytes wait for the verdict, which is all a
             // block needs (a TLS or HTTP server sends nothing before the client does).
             let (server_tx, server_rx) = oneshot::channel();
-            let mut download = tokio::spawn(async move {
-                let Ok(Ok(outbound)) = timeout(CONNECT_TIMEOUT, TcpStream::connect(remote)).await else { return };
-                let _ = outbound.set_nodelay(true);
-                let (server_read, server_write) = outbound.into_split();
-                if server_tx.send(server_write).is_ok() {
-                    pipe(server_read, app_write).await;
-                }
-            });
+            let mut parked = None;
+            let mut download = if connect_first {
+                Some(connect(remote, server_tx, app_write))
+            } else {
+                parked = Some((server_tx, app_write));
+                None
+            };
             let peek_timeout = if WEB_PORTS.contains(&remote.port()) { PEEK_TIMEOUT } else { OTHER_PORT_PEEK_TIMEOUT };
-            let first = match first_flight(&mut app_read, peek_timeout).await {
-                Some((_, Some(name))) if filter.is_blocked(&name) => {
+            let flight = first_flight(&mut app_read, peek_timeout).await;
+            let refused = match (&flight, rule) {
+                (Some((_, Some(name))), _) if filter.is_blocked(name) => Some(name.clone()),
+                // Nameless, to an address our DNS never gave out: a hardcoded IP or own resolver.
+                (Some((_, None)), AppRule::Watched(_)) if resolved.is_none() => Some(remote.ip().to_string()),
+                _ => None,
+            };
+            if let AppRule::Watched(uid) = rule {
+                let shown = flight.as_ref().and_then(|(_, name)| name.as_deref());
+                let destination = refused.as_deref().or(shown).or(resolved.as_deref());
+                if let Some(destination) = destination {
+                    apps.record(uid, destination, refused.is_some());
+                }
+            }
+            let first = match (flight, refused) {
+                (Some(_), Some(name)) => {
                     // Dropping both halves closes the app's connection at once.
-                    download.abort();
+                    if let Some(download) = download {
+                        download.abort();
+                    }
                     stats.blocked.fetch_add(1, Ordering::Relaxed);
-                    stats.remember(name);
+                    // Only names: the allow dialog offers these, and an address is not a domain.
+                    if name.parse::<IpAddr>().is_err() {
+                        stats.remember(name);
+                    }
                     return;
                 }
-                Some((first, _)) => first,
-                None => {
-                    download.abort();
+                (Some((first, _)), None) => first,
+                (None, _) => {
+                    if let Some(download) = download {
+                        download.abort();
+                    }
                     return;
                 }
+            };
+            let mut download = match (download.take(), parked.take()) {
+                (Some(download), _) => download,
+                (None, Some((server_tx, app_write))) => connect(remote, server_tx, app_write),
+                (None, None) => return,
             };
             // An unreachable server drops the sender: closing `inbound` then resets the app.
             let Ok(mut server_write) = server_rx.await else { return };
@@ -454,6 +508,23 @@ async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: SharedFi
             }
         });
     }
+}
+
+/// Opens the real connection and relays the server's bytes to the app; the write half goes back
+/// through `server_tx` (dropped if the server is unreachable).
+fn connect<W: AsyncWrite + Unpin + Send + 'static>(
+    remote: SocketAddr,
+    server_tx: oneshot::Sender<tokio::net::tcp::OwnedWriteHalf>,
+    app_write: W,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let Ok(Ok(outbound)) = timeout(CONNECT_TIMEOUT, TcpStream::connect(remote)).await else { return };
+        let _ = outbound.set_nodelay(true);
+        let (server_read, server_write) = outbound.into_split();
+        if server_tx.send(server_write).is_ok() {
+            pipe(server_read, app_write).await;
+        }
+    })
 }
 
 /// Reads what the app sends first until its server name is known (or cannot be), at most
@@ -549,7 +620,7 @@ fn start_udp_flow(
 
 enum QuicDecision {
     /// Allowed name: these datagrams were held back and go out first.
-    Allow(Vec<Vec<u8>>),
+    Allow(Vec<Vec<u8>>, String),
     Block(String),
     /// No readable name (another QUIC version, another protocol, or nothing in time): refused,
     /// so the app falls back to TCP, where the SNI is inspected.
@@ -574,7 +645,7 @@ async fn inspect_quic(first: Vec<u8>, from_app: &mut mpsc::Receiver<Vec<u8>>, fi
         held.push(datagram);
         match peek {
             QuicPeek::Name(name) if filter.is_blocked(&name) => return QuicDecision::Block(name),
-            QuicPeek::Name(_) => return QuicDecision::Allow(held),
+            QuicPeek::Name(name) => return QuicDecision::Allow(held, name),
             QuicPeek::Unknown => return QuicDecision::Refuse,
             QuicPeek::NeedMore => {}
         }
@@ -592,16 +663,27 @@ async fn udp_flow(local: SocketAddr, remote: SocketAddr, mut from_app: mpsc::Rec
     let stats = &context.stats;
     let _active = Active::new(&stats.udp_active);
     let Some(first) = from_app.recv().await else { return };
-    if context.apps.blocks(Protocol::Udp, local, remote).await {
+    let apps = &context.apps;
+    let rule = apps.rule(Protocol::Udp, local, remote).await;
+    if rule == AppRule::Blocked {
         stats.blocked.fetch_add(1, Ordering::Relaxed);
         swallow(&mut from_app).await;
         return;
     }
+    let watched = |destination: &str, refused: bool| {
+        if let AppRule::Watched(uid) = rule {
+            apps.record(uid, destination, refused);
+        }
+    };
     // QUIC on its usual port, or a QUIC Initial on any other (DoQ, apps on custom ports).
     let held = if remote.port() == QUIC_PORT || quic::looks_like_initial(&first) {
         match inspect_quic(first, &mut from_app, &context.filter.current()).await {
-            QuicDecision::Allow(held) => held,
+            QuicDecision::Allow(held, name) => {
+                watched(&name, false);
+                held
+            }
             QuicDecision::Block(name) => {
+                watched(&name, true);
                 stats.blocked.fetch_add(1, Ordering::Relaxed);
                 stats.remember(name);
                 swallow(&mut from_app).await;
@@ -609,6 +691,20 @@ async fn udp_flow(local: SocketAddr, remote: SocketAddr, mut from_app: mpsc::Rec
             }
             QuicDecision::Refuse => {
                 stats.quic_refused.fetch_add(1, Ordering::Relaxed);
+                swallow(&mut from_app).await;
+                return;
+            }
+        }
+    } else if let AppRule::Watched(_) = rule {
+        // Nameless UDP: a watched app only reaches addresses our DNS gave out.
+        match apps.resolved_name(remote.ip()) {
+            Some(name) => {
+                watched(&name, false);
+                vec![first]
+            }
+            None => {
+                watched(&remote.ip().to_string(), true);
+                stats.blocked.fetch_add(1, Ordering::Relaxed);
                 swallow(&mut from_app).await;
                 return;
             }
@@ -785,6 +881,60 @@ mod tests {
         let reply = packet::parse(&echoed).unwrap();
         assert_eq!((reply.dst_port, reply.payload), (41002, &b"from another app"[..]));
         assert!(tunnel.stats().encode().starts_with("0,1,"), "{}", tunnel.stats().encode());
+        tunnel.stop();
+    }
+
+    struct Everyone(u32);
+
+    impl OwnerLookup for Everyone {
+        fn owner(&mut self, _: Protocol, _: SocketAddr, _: SocketAddr) -> Option<u32> {
+            Some(self.0)
+        }
+    }
+
+    /// Upstream DNS that answers every query with one A record, 127.0.0.1.
+    fn loopback_resolver() -> SocketAddr {
+        let upstream = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = upstream.local_addr().unwrap();
+        thread::spawn(move || {
+            let mut buffer = [0u8; 512];
+            while let Ok((n, from)) = upstream.recv_from(&mut buffer) {
+                let mut answer = buffer[..n].to_vec();
+                answer[2] |= 0x80; // response
+                answer[7] = 1; // one answer
+                answer.extend_from_slice(&[0xC0, 12, 0, 1, 0, 1, 0, 0, 1, 44, 0, 4, 127, 0, 0, 1]);
+                upstream.send_to(&answer, from).unwrap();
+            }
+        });
+        address
+    }
+
+    #[test]
+    fn a_watched_app_reaches_only_what_our_dns_resolved() {
+        let (app, tun) = fake_tun();
+        let tunnel = start(&tun);
+        tunnel.set_upstream(vec![loopback_resolver()]);
+        tunnel.set_owner_lookup(Everyone(10125)).unwrap();
+        tunnel.set_watched_apps([10125]);
+        let echo = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let echo_port = echo.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let mut buffer = [0u8; 512];
+            while let Ok((n, from)) = echo.recv_from(&mut buffer) {
+                echo.send_to(&buffer[..n], from).unwrap();
+            }
+        });
+        let client = ip("10.111.0.2");
+
+        // A hardcoded address: dropped. Then the name is resolved through the tunnel.
+        send(&app, &udp_packet(client, ip("127.0.0.1"), 42001, echo_port, b"hardcoded"));
+        send(&app, &udp_packet(client, ip("10.111.0.1"), 42002, 53, &build_query(3, "echo.example", TYPE_A)));
+        let answer = receive(&app);
+        assert_eq!(packet::parse(&answer).unwrap().src_port, 53, "the hardcoded datagram must not come back");
+        send(&app, &udp_packet(client, ip("127.0.0.1"), 42003, echo_port, b"resolved"));
+        let echoed = receive(&app);
+        assert_eq!(packet::parse(&echoed).unwrap().payload, b"resolved");
+        assert_eq!(tunnel.app_activity(10125), "0\techo.example\n1\t127.0.0.1\n");
         tunnel.stop();
     }
 

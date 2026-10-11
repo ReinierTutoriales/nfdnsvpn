@@ -8,6 +8,9 @@ use std::net::IpAddr;
 const DNS_PORT: u16 = 53;
 /// DNS over TLS (TCP) and DNS over QUIC (UDP).
 const ENCRYPTED_DNS_PORT: u16 = 853;
+/// Firefox asks for this name before turning on its own DNS over HTTPS; "no such domain" keeps
+/// it on the system DNS (Mozilla's documented network signal).
+const FIREFOX_DOH_CANARY: &str = "use-application-dns.net";
 
 #[derive(Debug, PartialEq)]
 pub enum Verdict {
@@ -34,6 +37,17 @@ pub fn classify(filter: &Filter, intercepted: &[IpAddr], data: &[u8]) -> Verdict
     let Some(p) = packet::parse(data) else { return Verdict::Drop };
     if p.protocol == PROTO_UDP && p.dst_port == DNS_PORT {
         return match dns::parse_query(p.payload) {
+            // No HTTPS/SVCB records: without their ECH keys, TLS and QUIC show the server name,
+            // which is what lets the filter see where an allowed app connects. Clients fall back
+            // to A/AAAA, so nothing breaks.
+            Some(q) if q.qtype == dns::TYPE_HTTPS || q.qtype == dns::TYPE_SVCB => {
+                let answer = dns::blocked_response(p.payload, &q);
+                Verdict::Reply { packet: packet::udp_reply(&p, &answer), blocked: None }
+            }
+            Some(q) if q.name == FIREFOX_DOH_CANARY => {
+                let answer = dns::nxdomain_response(p.payload, &q);
+                Verdict::Reply { packet: packet::udp_reply(&p, &answer), blocked: None }
+            }
             Some(q) if filter.is_blocked(&q.name) => {
                 let answer = dns::blocked_response(p.payload, &q);
                 Verdict::Reply { packet: packet::udp_reply(&p, &answer), blocked: Some(q.name) }
@@ -104,6 +118,20 @@ mod tests {
         let reply = packet::parse(&wrapped).unwrap();
         assert_eq!((reply.dst, reply.dst_port), (ip("10.111.0.2"), 40000));
         assert_eq!(reply.payload, b"upstream answer");
+    }
+
+    #[test]
+    fn ech_records_and_firefox_doh_are_refused_for_any_name() {
+        let f = sample_filter();
+        for (qtype, name, rcode) in
+            [(dns::TYPE_HTTPS, "example.com", 0), (dns::TYPE_SVCB, "_dns.resolver.arpa", 0), (TYPE_A, FIREFOX_DOH_CANARY, 3)]
+        {
+            let query = udp_packet(ip("10.111.0.2"), ip("10.111.0.1"), 40000, 53, &build_query(9, name, qtype));
+            let Verdict::Reply { packet, blocked: None } = classify(&f, &intercepted(), &query) else { panic!("{name}") };
+            let reply = packet::parse(&packet).unwrap();
+            assert_eq!(reply.payload[3] & 0x0F, rcode, "{name}");
+            assert_eq!(&reply.payload[6..8], &[0, 0], "{name}: no answer records");
+        }
     }
 
     #[test]

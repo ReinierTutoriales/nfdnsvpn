@@ -67,6 +67,9 @@ class NativeCoreTest {
             // Finds ConnectionOwner and checks find()'s signature from native code.
             tunnel.setBlockedApps(intArrayOf(10123, 10124))
             tunnel.setBlockedApps(intArrayOf())
+            tunnel.setWatchedApps(intArrayOf(10125))
+            assertTrue(tunnel.appActivity(10125).isEmpty())
+            tunnel.setWatchedApps(intArrayOf())
         } finally {
             tunnel.close()
         }
@@ -88,6 +91,15 @@ class NativeCoreTest {
         } finally {
             ConnectionOwner.lookup = null
         }
+    }
+
+    @Test
+    fun parsesDestinations() {
+        assertEquals(
+            listOf(Destination("log.app.example", false), Destination("203.0.113.5", true)),
+            Destination.parse("0\tlog.app.example\n1\t203.0.113.5\n"),
+        )
+        assertTrue(Destination.parse("").isEmpty())
     }
 
     @Test

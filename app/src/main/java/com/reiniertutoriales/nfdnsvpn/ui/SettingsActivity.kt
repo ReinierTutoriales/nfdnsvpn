@@ -116,6 +116,17 @@ class SettingsActivity : ComponentActivity() {
         }
 
         val apps = launchableApps()
+        section(R.string.settings_blocked_domains)
+        val blockedDomains = ShieldSettings.blockedDomains(this).sorted()
+        if (blockedDomains.isEmpty()) note(R.string.settings_allowed_empty)
+        for (domain in blockedDomains) {
+            button(getString(R.string.settings_blocked_domains_remove, domain)) {
+                ShieldSettings.setDomainBlocked(this, domain, false)
+                filterChanged = true
+                build()
+            }
+        }
+
         section(R.string.settings_excluded)
         note(R.string.settings_excluded_note)
         val excluded = ShieldSettings.excludedApps(this)
@@ -136,6 +147,20 @@ class SettingsActivity : ComponentActivity() {
                     // An excluded app bypasses the tunnel: it has to come back in first.
                     if (packageName in ShieldSettings.excludedApps(this)) restartNeeded = true else blockedAppsChanged = true
                 }
+            }
+
+            section(R.string.settings_watched)
+            note(R.string.settings_watched_note)
+            val watched = ShieldSettings.watchedApps(this)
+            for ((packageName, label) in apps) {
+                checkbox(label, packageName in watched) { checked ->
+                    ShieldSettings.setAppWatched(this, packageName, checked)
+                    // A fresh session: apps resolve again, so their addresses are known.
+                    restartNeeded = true
+                }
+            }
+            for ((packageName, label) in apps.filter { it.first in watched }) {
+                button(getString(R.string.watched_activity, label)) { onWatchedActivity(packageName, label) }
             }
         }
 
@@ -173,6 +198,42 @@ class SettingsActivity : ComponentActivity() {
                 ShieldSettings.setDomainAllowed(this, names[which], true)
                 filterChanged = true
                 Toast.makeText(this, R.string.allow_hint, Toast.LENGTH_LONG).show()
+                build()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    /**
+     * Where a watched app has gone, picked with the remote: an allowed name gets blocked (its
+     * telemetry, say), a name the lists refused gets allowed. Bare addresses only inform.
+     */
+    private fun onWatchedActivity(packageName: String, label: String) {
+        val uid = ShieldVpnService.appUids(this, listOf(packageName)).firstOrNull()
+        val destinations = uid?.let { ShieldState.tunnel?.appActivity(it) }.orEmpty()
+        if (destinations.isEmpty()) {
+            AlertDialog.Builder(this).setMessage(R.string.watched_activity_empty).setPositiveButton(android.R.string.ok, null).show()
+            return
+        }
+        val rows = destinations.map { getString(if (it.refused) R.string.watched_refused else R.string.watched_allowed, it.name) }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.watched_activity, label))
+            .setItems(rows.toTypedArray()) { _, which ->
+                val destination = destinations[which]
+                when {
+                    destination.name.any { it == ':' } || destination.name.all { it.isDigit() || it == '.' } ->
+                        Toast.makeText(this, R.string.watched_address_hint, Toast.LENGTH_LONG).show()
+                    destination.refused -> {
+                        ShieldSettings.setDomainAllowed(this, destination.name, true)
+                        filterChanged = true
+                        Toast.makeText(this, R.string.allow_hint, Toast.LENGTH_LONG).show()
+                    }
+                    else -> {
+                        ShieldSettings.setDomainBlocked(this, destination.name, true)
+                        filterChanged = true
+                        Toast.makeText(this, getString(R.string.watched_blocked_hint, destination.name), Toast.LENGTH_LONG).show()
+                    }
+                }
                 build()
             }
             .setNegativeButton(android.R.string.cancel, null)

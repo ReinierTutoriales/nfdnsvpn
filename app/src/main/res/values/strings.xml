@@ -37,6 +37,16 @@
     <string name="settings_excluded_note">Su tráfico no pasa por el filtro. Úsalo solo para apps que dejen de funcionar con la protección.</string>
     <string name="settings_blocked">Apps sin internet</string>
     <string name="settings_blocked_note">La app marcada no puede conectarse a nada (anuncios, telemetría ni su propio contenido), aunque deje de funcionar. Necesita el modo completo. Si también está excluida, el bloqueo manda.</string>
+    <string name="settings_watched">Apps vigiladas</string>
+    <string name="settings_watched_note">Para las apps que quieres usar pero no se fían: solo pueden conectarse a servidores con un nombre que se pueda leer y esté permitido, o a direcciones que haya dado nuestro DNS. Se les cortan las IP fijas, su propio DNS y lo que no muestre nombre. Abajo ves a dónde se conectan y puedes bloquear lo que sobre. Necesita el modo completo.</string>
+    <string name="watched_activity">A dónde se conecta %1$s</string>
+    <string name="watched_activity_empty">Todavía no hay conexiones. Usa la app un rato y vuelve.</string>
+    <string name="watched_allowed">%1$s · pulsar para bloquear</string>
+    <string name="watched_refused">✕ %1$s · cortado (pulsar para permitir)</string>
+    <string name="watched_address_hint">Dirección sin nombre: el modo vigilado ya la corta.</string>
+    <string name="watched_blocked_hint">%1$s bloqueado en todas las apps. Puedes quitarlo en «Dominios bloqueados por ti».</string>
+    <string name="settings_blocked_domains">Dominios bloqueados por ti</string>
+    <string name="settings_blocked_domains_remove">Quitar %1$s</string>
     <string name="settings_status">Estado</string>
     <string name="settings_rules">Dominios en las listas: %1$d</string>
     <string name="settings_counters">Consultas: %1$d · Bloqueadas: %2$d · Conexiones: %3$d TCP, %4$d UDP · QUIC rechazado: %5$d</string>

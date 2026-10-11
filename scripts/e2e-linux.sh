@@ -39,6 +39,9 @@ srv() { ip netns exec "$SRV" "$@"; }
 # Proxy variables (set in some CI and sandbox environments) would send curl around the TUN.
 # A second "app", cut off the network entirely as an app blocked in Options is on Android.
 BLOCKED_USER=daemon
+# A third "app", watched: only readable allowed names or addresses our DNS gave out.
+WATCHED_USER=bin
+watched_app() { ip netns exec "$TV" runuser -u "$WATCHED_USER" -- env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY "$@"; }
 blocked_app() { ip netns exec "$TV" runuser -u "$BLOCKED_USER" -- env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY "$@"; }
 app() { ip netns exec "$TV" runuser -u nobody -- env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY "$@"; }
 
@@ -56,6 +59,8 @@ gw ip addr add 192.0.2.2/24 dev veth-gw
 srv ip addr add 192.0.2.1/24 dev veth-srv
 # A second address listed as an encrypted DNS server: non-DNS traffic to it must be refused.
 srv ip addr add 192.0.2.9/24 dev veth-srv
+# An address the fake DNS never gives out: a "hardcoded IP" for the watched-app checks.
+srv ip addr add 192.0.2.3/24 dev veth-srv
 if (( HAS_IPV6 )); then
     gw ip addr add 2001:db8:1::2/64 dev veth-gw nodad
     srv ip addr add 2001:db8:1::1/64 dev veth-srv nodad
@@ -154,9 +159,9 @@ except ImportError:
 fake_dns()
 EOF
 srv "$PY" "$WORK/servers.py" "$WORK" > /dev/null 2>&1 & PIDS+=($!)
-srv python3 -m http.server 8080 --bind 192.0.2.1 --directory "$WORK" >/dev/null 2>&1 & PIDS+=($!)
+srv python3 -m http.server 8080 --bind 0.0.0.0 --directory "$WORK" >/dev/null 2>&1 & PIDS+=($!)
 printf '||doubleclick.net^\n192.0.2.9\n' > "$WORK/list.txt"
-ip netns exec "$GW" env NFDNS_BLOCK_UID="$(id -u "$BLOCKED_USER")" NFDNS_APPS_NETNS="/var/run/netns/$TV" "$TUNNEL_BIN" tun0 192.0.2.1 "$WORK/list.txt" 10.111.0.1,8.8.8.8 > "$WORK/tunnel.log" 2>&1 &
+ip netns exec "$GW" env NFDNS_BLOCK_UID="$(id -u "$BLOCKED_USER")" NFDNS_WATCH_UID="$(id -u "$WATCHED_USER")" NFDNS_APPS_NETNS="/var/run/netns/$TV" "$TUNNEL_BIN" tun0 192.0.2.1 "$WORK/list.txt" 10.111.0.1,8.8.8.8 > "$WORK/tunnel.log" 2>&1 &
 TUNNEL_PID=$!   # ip netns exec execs the binary, so this is the tunnel itself
 PIDS+=("$TUNNEL_PID")
 sleep 1
@@ -318,6 +323,13 @@ check "App bloqueada: HTTPS cortado" "blocked*" "$(blocked_app curl -sk --max-ti
 check "App bloqueada: UDP cortado" "blocked" "$(blocked_app "$PY" "$WORK/client.py" udp 2>/dev/null || echo blocked)"
 check "App bloqueada: DNS propio sin respuesta" "blocked" "$(blocked_app "$PY" "$WORK/client.py" dns 8.8.8.8 example.org 2>/dev/null || echo blocked)"
 check "Otra app a la vez sí conecta" "hello through the tunnel" "$(app curl -s --max-time 5 http://192.0.2.1:8080/small)"
+# Watched app: the same server by a hardcoded address is cut, by a resolved one or a readable
+# allowed name it is reached; other apps are not affected.
+check "App vigilada: IP fija cortada" "blocked*" "$(out=$(watched_app curl -s --max-time 5 http://192.0.2.3:8080/small); [[ -z "$out" ]] && echo blocked || echo "served: $out")"
+check "App vigilada: IP dada por nuestro DNS" "hello through the tunnel" "$(watched_app curl -s --max-time 5 http://192.0.2.1:8080/small)"
+check "App vigilada: nombre legible y permitido (SNI)" "hello through the tunnel" "$(watched_app curl -sk --max-time 5 --resolve allowed.example:8443:192.0.2.3 https://allowed.example:8443/small)"
+check "App vigilada: dominio bloqueado (SNI)" "blocked (curl [35][56])" "$(watched_app curl -sk --max-time 5 --resolve ads.doubleclick.net:8443:192.0.2.3 https://ads.doubleclick.net:8443/small >/dev/null 2>&1 && echo served || echo "blocked (curl $?)")"
+check "Otra app sí llega a esa IP fija" "hello through the tunnel" "$(app curl -s --max-time 5 http://192.0.2.3:8080/small)"
 check "HTTP bloqueado por Host" "blocked*" "$(out=$(app curl -s --max-time 5 -H 'Host: ads.doubleclick.net' http://192.0.2.1:8080/small); [[ -z "$out" ]] && echo blocked || echo "served: $out")"
 
 # Five bursts of 50 parallel connections: all must succeed, and memory must not keep growing

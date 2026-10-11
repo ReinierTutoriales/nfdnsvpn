@@ -263,12 +263,42 @@ dominio bloqueado ni conectarse a él.
 | TLS o QUIC en puertos no estándar | SNI inspeccionado en cualquier puerto (3 s en 80/443/8080/8443, 300 ms en el resto); QUIC detectado en cualquier puerto por su paquete Initial | Sí |
 | QUIC ilegible (otra versión, cifrado propio sobre UDP 443) | Se descarta: la app vuelve a TCP | Sí |
 | La protección se detiene (actualización, falta de memoria) | La app avisa si falta «Bloquear conexiones sin VPN» de Android; con él no sale nada sin filtrar | No (ajuste del sistema) |
+| Encrypted Client Hello (oculta el nombre del servidor) | Las consultas HTTPS/SVCB (tipos 65 y 64), que llevan las claves ECH, reciben una respuesta vacía: sin claves, TLS y QUIC muestran el nombre real y el SNI se filtra. Los clientes vuelven a A/AAAA | Test unitario |
+| DoH propio de Firefox | `use-application-dns.net` responde NXDOMAIN, la señal oficial de Mozilla para que no lo active | Test unitario |
+| IP fija o resolvedor propio de una app permitida | **Apps vigiladas** (abajo): solo nombres legibles y permitidos o IPs dadas por nuestro DNS | Sí |
 | Modo ligero | No es a prueba de bypass: solo se enruta el DNS. Queda como opción de bajo consumo | — |
 
 **Límites que siguen existiendo** (ninguna herramienta sin descifrar el tráfico los cierra):
 una app que lleve sus consultas dentro de su propio protocolo cifrado hacia sus servidores, o
 que se conecte a una IP fija sin TLS ni nombre. Equivale a la app que sirve sus propios anuncios.
 Para esas apps queda el último recurso: **cortarles internet por completo** (abajo).
+
+## Apps permitidas, lo más limpias posible
+
+Para una app que se quiere usar pero que hace lo que quiere, hay tres niveles, de menos a más:
+
+1. **Por defecto, en todas:** DNS filtrado aunque usen su propio resolvedor, SNI/Host/QUIC
+   inspeccionados en cualquier puerto, DNS cifrado cortado, sin ECH y CNAME desenmascarados.
+2. **App vigilada** (Opciones › Apps vigiladas, Android 10+, modo completo): solo puede
+   conectarse a un servidor cuyo nombre se lea (SNI, `Host`, QUIC Initial) y esté permitido, o
+   a una dirección que haya dado nuestro DNS. Se cortan las IP fijas, su DNS por otro camino y
+   cualquier protocolo sin nombre hacia una dirección desconocida. Una conexión a una IP
+   desconocida no se abre hasta ver el nombre: el servidor no recibe nada.
+   - Una dirección resuelta vale lo que dice su TTL (como mínimo 5 min y como máximo 6 h) más 10
+     min. Se guardan como mucho 16 384 direcciones (~1 MB), y solo mientras hay alguna app
+     vigilada. Las direcciones son comunes a todas las apps: Android resuelve con un servicio del
+     sistema y no dice para quién.
+   - Activarla reinicia la protección: Android vacía su caché DNS y las apps resuelven otra vez.
+   - Rompe a propósito lo que conecta por IP sin pasar por el DNS (llamadas P2P/WebRTC, algunos
+     juegos). Por eso se activa app por app.
+3. **«A dónde se conecta» y bloquear lo que sobre:** de cada app vigilada se guardan los últimos
+   50 destinos (permitidos y cortados). En Opciones se elige uno con el mando: si estaba permitido,
+   se bloquea en todas las apps (su telemetría, por ejemplo) y queda en «Dominios bloqueados por
+   ti»; si lo cortaban las listas y hace falta, se permite.
+4. **App sin internet** (abajo), el último recurso.
+
+Límite honesto: si la telemetría sale del mismo nombre que el contenido (como los anuncios de
+YouTube desde `googlevideo.com`), nada que no descifre el tráfico puede separarlas.
 
 ## Apps sin internet
 

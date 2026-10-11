@@ -18,8 +18,10 @@ Dos modos, elegibles con el botón **Modo** de la pantalla:
   También en QUIC/HTTP3: lee el nombre del primer paquete; si no puede, fuerza a la app a TCP.
   Blindado contra bypass del DNS: resolvedor propio, DNS al router, DoT/DoQ, DoH por nombre o
   por IP, y TLS o QUIC en puertos raros (ver `docs/PLAN.md`).
-  Y si una app sirve sus propios anuncios o telemetría, se le puede **cortar internet por
-  completo** desde Opciones (Android 10+), aunque deje de funcionar.
+  Sin ECH (el nombre del servidor siempre se puede leer) y sin el DoH propio de Firefox.
+  Para las apps que quieres usar pero no se fían, desde Opciones (Android 10+):
+  **vigilarlas**, para que solo lleguen a nombres permitidos o a IPs de nuestro DNS, ver a dónde
+  se conectan y bloquear su telemetría con el mando; o **cortarles internet por completo**.
 - **Ligero:** solo el DNS pasa por la app. Coste casi nulo, pero una app con DNS propio se lo
   puede saltar.
 
@@ -38,7 +40,7 @@ Lo que hacen ambos modos:
 - Pantalla mínima: un botón grande de activar/desactivar, el estado y el número de bloqueos.
 - **Opciones** (opcional): cambiar de modo, permitir un dominio bloqueado eligiéndolo con el
   mando, elegir listas (incluidas HaGeZi Pro, más ligera, OISD small/big y las de uBlock Origin, de las que se usan sus
-  reglas de dominio), quitar dominios permitidos, excluir apps que fallen, dejar apps sin internet, arranque al encender
+  reglas de dominio), quitar dominios permitidos, excluir apps que fallen, vigilar apps y bloquear los dominios que contactan, dejar apps sin internet, arranque al encender
   y estado/consumo.
 - Ligera: las listas se compilan leyendo los archivos línea a línea (pico de unos 17 MB al
   compilar, 7 MB después) y nada se consulta en segundo plano mientras no miras la pantalla.

@@ -12,6 +12,8 @@ object ShieldSettings {
     private const val ALLOWED_DOMAINS = "allowedDomains"
     private const val EXCLUDED_APPS = "excludedApps"
     private const val BLOCKED_APPS = "blockedApps"
+    private const val WATCHED_APPS = "watchedApps"
+    private const val BLOCKED_DOMAINS = "blockedDomains"
     private const val START_ON_BOOT = "startOnBoot"
     private const val WANT_RUNNING = "wantRunning"
     private const val ASKED_TO_KEEP_RUNNING = "askedToKeepRunning"
@@ -65,6 +67,29 @@ object ShieldSettings {
         prefs(context).edit { putStringSet(BLOCKED_APPS, apps) }
     }
 
+    /**
+     * Watched packages (full mode, Android 10+): they may only reach readable, allowed server
+     * names or addresses our DNS gave out, so hardcoded IPs and their own resolvers are cut.
+     */
+    fun watchedApps(context: Context): Set<String> = prefs(context).getStringSet(WATCHED_APPS, emptySet())!!.toSet()
+
+    fun setAppWatched(context: Context, packageName: String, watched: Boolean) {
+        val apps = watchedApps(context).toMutableSet()
+        if (watched) apps += packageName else apps -= packageName
+        prefs(context).edit { putStringSet(WATCHED_APPS, apps) }
+    }
+
+    /** Domains (with their subdomains) the user blocked, e.g. an allowed app's telemetry. */
+    fun blockedDomains(context: Context): Set<String> = prefs(context).getStringSet(BLOCKED_DOMAINS, emptySet())!!.toSet()
+
+    /** Blocking a domain takes it off the allowed ones, or the allowlist would win. */
+    fun setDomainBlocked(context: Context, domain: String, blocked: Boolean) {
+        val domains = blockedDomains(context).toMutableSet()
+        if (blocked) domains += domain else domains -= domain
+        prefs(context).edit { putStringSet(BLOCKED_DOMAINS, domains) }
+        if (blocked) setDomainAllowed(context, domain, false)
+    }
+
     fun startOnBoot(context: Context) = prefs(context).getBoolean(START_ON_BOOT, true)
 
     fun setStartOnBoot(context: Context, enabled: Boolean) = prefs(context).edit { putBoolean(START_ON_BOOT, enabled) }
@@ -81,4 +106,7 @@ object ShieldSettings {
 
     /** Allowlist as exception rules for the filter (`@@||domain^` also covers subdomains). */
     fun allowlistRules(domains: Collection<String>): String = domains.sorted().joinToString("") { "@@||$it^\n" }
+
+    /** User blocklist as filter rules (`||domain^` also covers subdomains). */
+    fun blocklistRules(domains: Collection<String>): String = domains.sorted().joinToString("") { "||$it^\n" }
 }

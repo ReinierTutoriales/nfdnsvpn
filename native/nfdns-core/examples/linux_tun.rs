@@ -2,9 +2,9 @@
 //! Usage: linux_tun <tun name> <upstream ip[:port]> <list file> <intercepted ip,...>
 //! Prints the stats line (`queries,blocked,tcp,udp,quic_refused`) every second, and reloads the
 //! list (as the app's daily update does) when the file changes, printing `reloaded <rules>`.
-//! With `NFDNS_BLOCK_UID=<uid>` and `NFDNS_APPS_NETNS=<netns path>`, that user's connections are
-//! cut as a blocked app's are on Android: owners are looked up in the apps' `/proc/net` tables,
-//! the Linux counterpart of `getConnectionOwnerUid`.
+//! With `NFDNS_APPS_NETNS=<netns path>`, `NFDNS_BLOCK_UID=<uid>` and `NFDNS_WATCH_UID=<uid>`, those
+//! users get the rules of a blocked and a watched app on Android: owners are looked up in the
+//! apps' `/proc/net` tables, the Linux counterpart of `getConnectionOwnerUid`.
 use nfdns::apps::{OwnerLookup, Protocol};
 use nfdns::filter::FilterBuilder;
 use nfdns::parse_servers;
@@ -115,9 +115,11 @@ fn main() {
     let intercepted = intercepted.split(',').filter_map(|s| s.parse().ok()).collect();
     let tunnel = Arc::new(Tunnel::new(open_tun(tun), load(list), intercepted));
     tunnel.set_upstream(parse_servers(upstream));
-    if let (Ok(uid), Ok(netns)) = (std::env::var("NFDNS_BLOCK_UID"), std::env::var("NFDNS_APPS_NETNS")) {
+    if let Ok(netns) = std::env::var("NFDNS_APPS_NETNS") {
         tunnel.set_owner_lookup(ProcLookup { netns, joined: false }).expect("lookup thread");
-        tunnel.set_blocked_apps([uid.parse().expect("NFDNS_BLOCK_UID")]);
+        let uid = |name: &str| std::env::var(name).ok().map(|uid| uid.parse::<u32>().expect("uid"));
+        tunnel.set_blocked_apps(uid("NFDNS_BLOCK_UID"));
+        tunnel.set_watched_apps(uid("NFDNS_WATCH_UID"));
     }
     let reporter = tunnel.clone();
     let list = list.clone();

@@ -20,6 +20,18 @@ class ShieldSettingsTest {
     }
 
     @Test
+    fun userBlocklistBecomesDomainRules() {
+        val rules = ShieldSettings.blocklistRules(setOf("log.app.example", "metrics.example.com"))
+        assertEquals("||log.app.example^\n||metrics.example.com^\n", rules)
+        val handle = NativeCore.nativeCreate(arrayOf(rules))
+        try {
+            assertEquals(2, NativeCore.nativeRuleCount(handle))
+        } finally {
+            NativeCore.nativeDestroy(handle)
+        }
+    }
+
+    @Test
     fun defaultListsAreTheDocumentedOnes() {
         val defaults = ListRepository.ALL_LISTS.filter { it.enabledByDefault }.map { it.id }
         assertEquals(listOf("adguard-dns", "hagezi-ultimate", "hagezi-native", "hagezi-doh", "doh-ips"), defaults)

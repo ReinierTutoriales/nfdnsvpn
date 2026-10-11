@@ -3,6 +3,11 @@
 pub const TYPE_A: u16 = 1;
 pub const TYPE_AAAA: u16 = 28;
 const TYPE_CNAME: u16 = 5;
+/// Service binding records. They carry the ECH keys that hide the server name of a TLS or QUIC
+/// connection, which is what the SNI filter reads.
+pub const TYPE_SVCB: u16 = 64;
+pub const TYPE_HTTPS: u16 = 65;
+const RCODE_NXDOMAIN: u16 = 3;
 const CLASS_IN: u16 = 1;
 const HEADER_LEN: usize = 12;
 /// Short so that a list or allowlist change reaches apps within a minute.
@@ -101,44 +106,79 @@ fn read_name(message: &[u8], mut at: usize) -> Option<(String, usize)> {
     }
 }
 
-/// Targets of the CNAME records in the answer section. Trackers hide behind a first-party name
-/// (`metrics.shop.example CNAME shop.tracker.example`); checking the chain uncloaks them.
-pub fn cname_targets(message: &[u8]) -> Vec<String> {
-    let mut targets = Vec::new();
-    let (Some(questions), Some(answers)) = (read_u16(message, 4), read_u16(message, 6)) else { return targets };
+/// Records of the answer section as (type, offset of rdata, rdata length), or none at all if
+/// the header or the question section cannot be read.
+fn answer_records(message: &[u8]) -> Vec<(u16, usize, usize)> {
+    let mut records = Vec::new();
+    let (Some(questions), Some(answers)) = (read_u16(message, 4), read_u16(message, 6)) else { return records };
     let mut at = HEADER_LEN;
     for _ in 0..questions {
-        let Some((_, next)) = read_name(message, at) else { return targets };
+        let Some((_, next)) = read_name(message, at) else { return records };
         at = next + 4;
     }
     for _ in 0..answers {
         let Some((_, next)) = read_name(message, at) else { break };
         let (Some(kind), Some(length)) = (read_u16(message, next), read_u16(message, next + 8)) else { break };
         let rdata = next + 10;
-        if kind == TYPE_CNAME
-            && let Some((target, _)) = read_name(message, rdata)
-        {
-            targets.push(target);
+        if rdata + length as usize > message.len() {
+            break;
         }
+        records.push((kind, rdata, length as usize));
         at = rdata + length as usize;
     }
-    targets
+    records
+}
+
+/// Targets of the CNAME records in the answer section. Trackers hide behind a first-party name
+/// (`metrics.shop.example CNAME shop.tracker.example`); checking the chain uncloaks them.
+pub fn cname_targets(message: &[u8]) -> Vec<String> {
+    answer_records(message)
+        .into_iter()
+        .filter(|&(kind, _, _)| kind == TYPE_CNAME)
+        .filter_map(|(_, rdata, _)| read_name(message, rdata).map(|(target, _)| target))
+        .collect()
+}
+
+/// Addresses of the A and AAAA records in the answer section, with their TTL in seconds.
+pub fn answer_addresses(message: &[u8]) -> Vec<(std::net::IpAddr, u32)> {
+    answer_records(message)
+        .into_iter()
+        .filter_map(|(kind, rdata, length)| {
+            let ttl = u32::from_be_bytes(message.get(rdata - 6..rdata - 2)?.try_into().ok()?);
+            let bytes = message.get(rdata..rdata + length)?;
+            let ip = match (kind, length) {
+                (TYPE_A, 4) => std::net::IpAddr::from(<[u8; 4]>::try_from(bytes).ok()?),
+                (TYPE_AAAA, 16) => std::net::IpAddr::from(<[u8; 16]>::try_from(bytes).ok()?),
+                _ => return None,
+            };
+            Some((ip, ttl))
+        })
+        .collect()
 }
 
 /// Answer for a blocked name: `0.0.0.0` for A, `::` for AAAA and an empty NOERROR answer for
 /// every other type (HTTPS/SVCB included, so no record hints at the real servers).
 pub fn blocked_response(query: &[u8], question: &Question) -> Vec<u8> {
-    let rdata: &[u8] = match (question.qclass, question.qtype) {
-        (CLASS_IN, TYPE_A) => &[0; 4],
-        (CLASS_IN, TYPE_AAAA) => &[0; 16],
+    response(query, question, 0)
+}
+
+/// "No such domain": the answer that tells Firefox not to turn on its own DNS over HTTPS.
+pub fn nxdomain_response(query: &[u8], question: &Question) -> Vec<u8> {
+    response(query, question, RCODE_NXDOMAIN)
+}
+
+fn response(query: &[u8], question: &Question, rcode: u16) -> Vec<u8> {
+    let rdata: &[u8] = match (rcode, question.qclass, question.qtype) {
+        (0, CLASS_IN, TYPE_A) => &[0; 4],
+        (0, CLASS_IN, TYPE_AAAA) => &[0; 16],
         _ => &[],
     };
     let answers: u16 = if rdata.is_empty() { 0 } else { 1 };
     let mut out = Vec::with_capacity(question.end + 16 + rdata.len());
     out.extend_from_slice(&query[0..2]); // ID
     let request_flags = read_u16(query, 2).unwrap_or(0);
-    // QR=1, same opcode and RD, RA=1, RCODE=NOERROR.
-    let flags = 0x8000 | (request_flags & 0x7900) | 0x0080;
+    // QR=1, same opcode and RD, RA=1, and the given RCODE.
+    let flags = 0x8000 | (request_flags & 0x7900) | 0x0080 | rcode;
     out.extend_from_slice(&flags.to_be_bytes());
     out.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT
     out.extend_from_slice(&answers.to_be_bytes()); // ANCOUNT
@@ -212,6 +252,15 @@ mod tests {
         assert_eq!(cname_targets(&answer), vec!["shop.tracker.example", "edge.cdn.example"]);
         assert!(cname_targets(&answer[..20]).is_empty());
         assert!(cname_targets(&query).is_empty());
+    }
+
+    #[test]
+    fn reads_answer_addresses_after_a_cname_chain() {
+        let query = build_query(5, "metrics.shop.example", TYPE_A);
+        let answer = build_cname_answer(&query, &["edge.cdn.example"]);
+        assert_eq!(answer_addresses(&answer), vec![("192.0.2.1".parse().unwrap(), 300)]);
+        assert!(answer_addresses(&answer[..answer.len() - 1]).is_empty(), "truncated rdata");
+        assert!(answer_addresses(&query).is_empty());
     }
 
     #[test]

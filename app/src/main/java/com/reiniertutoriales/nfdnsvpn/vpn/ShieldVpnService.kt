@@ -45,7 +45,7 @@ class ShieldVpnService : VpnService() {
         const val ACTION_RESTART = "com.reiniertutoriales.nfdnsvpn.RESTART"
         /** Applies a list or allowlist change without dropping connections. */
         const val ACTION_RELOAD = "com.reiniertutoriales.nfdnsvpn.RELOAD"
-        /** Applies a blocked-app change at once (no filter rebuild). */
+        /** Applies a blocked-app change at once (no filter rebuild). Watched apps need a restart. */
         const val ACTION_BLOCKED_APPS = "com.reiniertutoriales.nfdnsvpn.BLOCKED_APPS"
         private const val CHANNEL = "shield"
         private const val NOTIFICATION_ID = 1
@@ -73,6 +73,18 @@ class ShieldVpnService : VpnService() {
         private val virtualAddresses = listOf(DNS_V4, DNS_V6, CLIENT_V4, CLIENT_V6).map(InetAddress::getByName)
 
         fun isVirtualAddress(address: InetAddress) = address in virtualAddresses
+
+        /**
+         * Uids of installed packages. Uids below the first app uid are shared by system
+         * components and never get a rule.
+         */
+        fun appUids(context: Context, packages: Collection<String>): IntArray = packages.mapNotNull { app ->
+            try {
+                context.packageManager.getApplicationInfo(app, 0).uid.takeIf { it >= Process.FIRST_APPLICATION_UID }
+            } catch (e: PackageManager.NameNotFoundException) {
+                null
+            }
+        }.distinct().toIntArray()
 
         fun start(context: Context) = send(context, ACTION_START)
         fun stop(context: Context) = send(context, ACTION_STOP)
@@ -116,7 +128,7 @@ class ShieldVpnService : VpnService() {
             ACTION_RELOAD, ACTION_BLOCKED_APPS -> {
                 val jobs = maintenance
                 val reload = intent.action == ACTION_RELOAD
-                val job = Runnable { if (reload) reloadFilter() else tunnel?.let(::applyBlockedApps) }
+                val job = Runnable { if (reload) reloadFilter() else tunnel?.let(::applyAppRules) }
                 when {
                     jobs != null -> jobs.execute(job)
                     // Not running: the next start loads the current settings anyway. Do not leave
@@ -217,7 +229,7 @@ class ShieldVpnService : VpnService() {
             tunnel = current
             ShieldState.tunnel = current
             current.setUpstream(servers.get())
-            applyBlockedApps(current)
+            applyAppRules(current)
             if (stopping) return
             jobs = Executors.newSingleThreadScheduledExecutor().apply {
                 scheduleWithFixedDelay(::refreshDueLists, LIST_CHECK_HOURS, LIST_CHECK_HOURS, TimeUnit.HOURS)
@@ -263,20 +275,14 @@ class ShieldVpnService : VpnService() {
     }
 
     /**
-     * Cuts the chosen apps off the network: the core drops every new connection they open. Needs
-     * Android 10+ (to learn who owns a connection) and the full mode (all their traffic reaches
-     * the tunnel). Uids below the first app uid are shared by system components and never cut.
+     * Blocked apps lose every new connection; watched apps keep only readable, allowed names and
+     * addresses our DNS gave out. Needs Android 10+ (to learn who owns a connection) and the full
+     * mode (all their traffic reaches the tunnel).
      */
-    private fun applyBlockedApps(target: NativeTunnel) {
+    private fun applyAppRules(target: NativeTunnel) {
         if (Build.VERSION.SDK_INT < 29) return
-        val uids = ShieldSettings.blockedApps(this).mapNotNull { app ->
-            try {
-                packageManager.getApplicationInfo(app, 0).uid.takeIf { it >= Process.FIRST_APPLICATION_UID }
-            } catch (e: PackageManager.NameNotFoundException) {
-                null
-            }
-        }
-        target.setBlockedApps(uids.distinct().toIntArray())
+        target.setBlockedApps(appUids(this, ShieldSettings.blockedApps(this)))
+        target.setWatchedApps(appUids(this, ShieldSettings.watchedApps(this)))
     }
 
     /** Compiles the enabled lists straight from their files; returns a filter handle. */
@@ -288,6 +294,7 @@ class ShieldVpnService : VpnService() {
         try {
             NativeCore.nativeBuilderAddText(builder, repository.bundledRules())
             NativeCore.nativeBuilderAddText(builder, ShieldSettings.allowlistRules(ShieldSettings.allowedDomains(this)))
+            NativeCore.nativeBuilderAddText(builder, ShieldSettings.blocklistRules(ShieldSettings.blockedDomains(this)))
             for (file in lists.files) {
                 if (!NativeCore.nativeBuilderAddFile(builder, file.absolutePath)) Log.w(TAG, "Unreadable list ${file.name}")
             }
@@ -329,8 +336,8 @@ class ShieldVpnService : VpnService() {
         }
         // Our own list downloads, DNS forwarding and relay sockets must not loop back.
         builder.addDisallowedApplication(packageName)
-        // A blocked app must stay in the tunnel, or nothing could cut it off.
-        for (app in ShieldSettings.excludedApps(this) - ShieldSettings.blockedApps(this)) {
+        // A blocked or watched app must stay in the tunnel, or its rule could not apply.
+        for (app in ShieldSettings.excludedApps(this) - ShieldSettings.blockedApps(this) - ShieldSettings.watchedApps(this)) {
             try {
                 builder.addDisallowedApplication(app)
             } catch (e: PackageManager.NameNotFoundException) {

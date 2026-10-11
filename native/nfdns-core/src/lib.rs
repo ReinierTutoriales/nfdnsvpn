@@ -320,8 +320,30 @@ fn ip_bytes(ip: IpAddr) -> Vec<u8> {
     }
 }
 
-/// Apps (uids) cut off the network entirely. The first non-empty call installs the owner lookup;
-/// it must come from a Java thread, so the app's class loader finds `ConnectionOwner`.
+/// Installs the owner lookup the first time an app gets a rule. Must run on a Java thread, so
+/// the app's class loader finds `ConnectionOwner`.
+fn ensure_owner_lookup(env: &mut jni::Env, t: &Tunnel) -> jni::errors::Result<()> {
+    if t.has_owner_lookup() {
+        return Ok(());
+    }
+    let class = env.find_class(jni::jni_str!("com/reiniertutoriales/nfdnsvpn/core/ConnectionOwner"))?;
+    // Fails here, as NoSuchMethodError, if R8 or a refactor broke the callback.
+    env.get_static_method_id(&class, jni::jni_str!("find"), FIND_SIGNATURE)?;
+    let lookup = JavaOwnerLookup { vm: env.get_java_vm()?, class: env.new_global_ref(class)? };
+    if t.set_owner_lookup(lookup).is_err() {
+        // Reaches Kotlin as an exception once the native call returns.
+        env.throw_new(jni::jni_str!("java/lang/IllegalStateException"), jni::jni_str!("No se pudo iniciar el control por app"))?;
+    }
+    Ok(())
+}
+
+fn read_uids(env: &mut jni::Env, uids: &JIntArray) -> jni::errors::Result<Vec<u32>> {
+    let mut values = vec![0; uids.len(env)?];
+    uids.get_region(env, 0, &mut values)?;
+    Ok(values.into_iter().filter_map(|uid| u32::try_from(uid).ok()).collect())
+}
+
+/// Apps (uids) cut off the network entirely.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelSetBlockedApps<'caller>(
     mut unowned: EnvUnowned<'caller>,
@@ -332,26 +354,50 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
     unowned
         .with_env(|env| -> jni::errors::Result<()> {
             let Some(t) = tunnel(handle) else { return Ok(()) };
-            let mut blocked = vec![0; uids.len(env)?];
-            uids.get_region(env, 0, &mut blocked)?;
-            if !blocked.is_empty() && !t.has_owner_lookup() {
-                let class = env.find_class(jni::jni_str!("com/reiniertutoriales/nfdnsvpn/core/ConnectionOwner"))?;
-                // Fails here, as NoSuchMethodError, if R8 or a refactor broke the callback.
-                env.get_static_method_id(&class, jni::jni_str!("find"), FIND_SIGNATURE)?;
-                let lookup = JavaOwnerLookup { vm: env.get_java_vm()?, class: env.new_global_ref(class)? };
-                if t.set_owner_lookup(lookup).is_err() {
-                    // Reaches Kotlin as an exception once this call returns.
-                    env.throw_new(
-                        jni::jni_str!("java/lang/IllegalStateException"),
-                        jni::jni_str!("No se pudo iniciar el bloqueo de apps"),
-                    )?;
-                    return Ok(());
-                }
+            let uids = read_uids(env, &uids)?;
+            if !uids.is_empty() {
+                ensure_owner_lookup(env, t)?;
             }
-            t.set_blocked_apps(blocked.into_iter().filter_map(|uid| u32::try_from(uid).ok()));
+            t.set_blocked_apps(uids);
             Ok(())
         })
         .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// Watched apps (uids): only readable, allowed names or addresses our DNS gave out.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelSetWatchedApps<'caller>(
+    mut unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    uids: JIntArray<'caller>,
+) {
+    unowned
+        .with_env(|env| -> jni::errors::Result<()> {
+            let Some(t) = tunnel(handle) else { return Ok(()) };
+            let uids = read_uids(env, &uids)?;
+            if !uids.is_empty() {
+                ensure_owner_lookup(env, t)?;
+            }
+            t.set_watched_apps(uids);
+            Ok(())
+        })
+        .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// Recent destinations of a watched app, one per line: `1<TAB>name` refused, `0<TAB>name` allowed.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelAppActivity<'caller>(
+    mut unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    uid: jint,
+) -> JString<'caller> {
+    let activity = match (tunnel(handle), u32::try_from(uid)) {
+        (Some(t), Ok(uid)) => t.app_activity(uid),
+        _ => String::new(),
+    };
+    unowned.with_env(|env| -> jni::errors::Result<JString<'caller>> { env.new_string(activity) }).resolve::<ThrowRuntimeExAndDefault>()
 }
 
 #[cfg(test)]

@@ -35,6 +35,10 @@ object NativeCore {
     @JvmStatic external fun nativeTunnelSetUpstream(tunnel: Long, servers: String)
     /** Apps (uids) cut off the network entirely; asks [ConnectionOwner] who owns each new flow. */
     @JvmStatic external fun nativeTunnelSetBlockedApps(tunnel: Long, uids: IntArray)
+    /** Watched apps (uids): only readable, allowed names or addresses our DNS gave out. */
+    @JvmStatic external fun nativeTunnelSetWatchedApps(tunnel: Long, uids: IntArray)
+    /** Recent destinations of a watched app, one per line: `1<TAB>name` refused, `0<TAB>name` allowed. */
+    @JvmStatic external fun nativeTunnelAppActivity(tunnel: Long, uid: Int): String
     /** Blocks until [nativeTunnelStop]; empty string, or the error that ended the tunnel. */
     @JvmStatic external fun nativeTunnelRun(tunnel: Long): String
     @JvmStatic external fun nativeTunnelStop(tunnel: Long)
@@ -59,6 +63,16 @@ class TunnelStats(
             if (numbers.size != 5) return null
             return TunnelStats(numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], lines.drop(1).filter(String::isNotEmpty))
         }
+    }
+}
+
+/** A server name (or a bare address) a watched app reached, or tried to reach and was refused. */
+data class Destination(val name: String, val refused: Boolean) {
+    companion object {
+        fun parse(encoded: String): List<Destination> = encoded.lineSequence().mapNotNull { line ->
+            val (flag, name) = line.split('\t', limit = 2).takeIf { it.size == 2 } ?: return@mapNotNull null
+            Destination(name, flag == "1")
+        }.toList()
     }
 }
 
@@ -87,6 +101,14 @@ class NativeTunnel(filter: Long, fd: Int, intercepted: List<String>) : Closeable
     @Synchronized fun setBlockedApps(uids: IntArray) {
         if (handle != 0L) NativeCore.nativeTunnelSetBlockedApps(handle, uids)
     }
+
+    @Synchronized fun setWatchedApps(uids: IntArray) {
+        if (handle != 0L) NativeCore.nativeTunnelSetWatchedApps(handle, uids)
+    }
+
+    /** Where a watched app went, most recent first. */
+    @Synchronized fun appActivity(uid: Int): List<Destination> =
+        if (handle != 0L) Destination.parse(NativeCore.nativeTunnelAppActivity(handle, uid)) else emptyList()
 
     @Synchronized fun stats(): TunnelStats? =
         if (handle != 0L) TunnelStats.parse(NativeCore.nativeTunnelStats(handle)) else null
