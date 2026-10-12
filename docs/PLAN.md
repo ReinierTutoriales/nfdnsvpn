@@ -257,6 +257,30 @@ Es la prueba en el dispositivo, sin código nuevo previsto salvo ajustes que sal
 | Lista descargada incompleta | Bastaba con superar un mínimo fijo de reglas | Además no puede tener menos de la mitad de reglas que la última copia buena; si no, se conserva la anterior y Opciones muestra el error |
 | Descarga redirigida a HTTP | Se aceptaba | Se rechaza: listas solo por HTTPS, también tras redirecciones |
 
+### Endurecimiento para 2 GB (segunda revisión)
+
+| Cambio | Antes | Ahora |
+|---|---|---|
+| Tope de conexiones | Sin límite: muchas conexiones a la vez podían crecer hasta que Android matara la app | 512 TCP (~40 MB, muy por encima de lo que abre una TV) y 256 flujos UDP (~4 MB). Las nuevas por encima se rechazan al momento (RST o descarte) y se cuentan. e2e: 600 intentos → 512 abiertas, 88 rechazadas, y todo vuelve a funcionar al cerrarse |
+| Socket TCP cuyo otro extremo deja de responder | La pila retenía el socket y sus ~64 KiB durante 7200 s (valor de Linux, marcado FIXME en netstack-smoltcp) | 120 s; con el keep-alive de 28 s una app viva siempre responde antes (parche documentado en `native/vendor/netstack-smoltcp/NFDNSVPN-PATCH.md`) |
+| Conexión DNS cifrada colgada (cambio de Wi-Fi, router que tira la conexión) | No se detectaba: todas las consultas caducaban hasta que TCP se rendía, minutos después | Una consulta sin respuesta 1,8 s cierra la conexión y las consultas que aún esperan se reenvían por una nueva al siguiente servidor. e2e con servidor que se cuelga |
+| Ningún servidor DNS responde | Silencio: la app esperaba su propio tiempo de espera y reintentaba | SERVFAIL inmediato (salvo los servidores de hora, que se contestan en local) |
+| Diagnóstico en la TV | — | Opciones › Estado muestra conexiones TCP/UDP activas, consultas sin respuesta y rechazos por tope |
+
+Propuestas de esa revisión que no se aplican:
+- *Caché del dueño (uid) de las conexiones*: cada conexión nueva tiene una tupla nueva, así que
+  una caché por tupla no acierta nunca; por IP o por puerto local atribuiría conexiones a la app
+  equivocada cuando el puerto se reutiliza, que es un fallo de seguridad. La consulta tarda
+  menos de un milisegundo y, si falla, ya se corta (no se deja pasar).
+- *Porcentaje mínimo de líneas válidas en las listas*: las listas legítimas tienen muchas líneas
+  de comentarios y modificadores, y una lista maliciosa bien formada lo superaría igual. Contra
+  descargas cortadas ya está la guarda de la mitad de reglas; las sumas SHA-256 fijas no sirven
+  para listas que cambian a diario.
+- *Bajar la caché de direcciones resueltas a 8 000*: ya está acotada (16 384, ~1 MB) y solo existe
+  con alguna app vigilada; vaciarla antes cortaría conexiones legítimas de esas apps.
+- *Contar sockets en LAST_ACK o CLOSE_WAIT*: el tiempo de espera de 120 s los acota sin
+  instrumentar la pila, y el e2e ya comprueba que las conexiones se liberan.
+
 Hallazgos que se dejan como están, con motivo:
 - *Copias de paquetes (`to_vec`) en el camino caliente*: la pila TCP/IP necesita el paquete en
   propiedad. Medido: +0,03 ms por consulta DNS y más de 1 Gbit/s en PC; se revisará con la

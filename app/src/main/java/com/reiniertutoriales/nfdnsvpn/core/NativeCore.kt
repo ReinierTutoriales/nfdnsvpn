@@ -42,7 +42,7 @@ object NativeCore {
     /** Blocks until [nativeTunnelStop]; empty string, or the error that ended the tunnel. */
     @JvmStatic external fun nativeTunnelRun(tunnel: Long): String
     @JvmStatic external fun nativeTunnelStop(tunnel: Long)
-    /** `queries,blocked,tcp,udp,quic_refused,dns_failed` followed by recently blocked names, one per line. */
+    /** `queries,blocked,tcp,udp,quic_refused,dns_failed,flows_refused` followed by recently blocked names, one per line. */
     @JvmStatic external fun nativeTunnelStats(tunnel: Long): String
     @JvmStatic external fun nativeTunnelFree(tunnel: Long)
 }
@@ -56,14 +56,16 @@ class TunnelStats(
     val quicRefused: Long,
     /** Allowed queries no resolver answered in time (a chosen TLS resolver unreachable). */
     val dnsFailed: Long,
+    /** New connections refused because the tunnel's limit (512 TCP, 256 UDP) was reached. */
+    val flowsRefused: Long,
     val recent: List<String>,
 ) {
     companion object {
         fun parse(encoded: String): TunnelStats? {
             val lines = encoded.split('\n')
             val numbers = lines.first().split(',').mapNotNull(String::toLongOrNull)
-            if (numbers.size != 6) return null
-            return TunnelStats(numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5], lines.drop(1).filter(String::isNotEmpty))
+            if (numbers.size != 7) return null
+            return TunnelStats(numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5], numbers[6], lines.drop(1).filter(String::isNotEmpty))
         }
     }
 }

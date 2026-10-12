@@ -34,6 +34,12 @@ const MTU: usize = 1500;
 /// Queries forwarded at once. A TV has a few dozen in flight at most; beyond this a flood is
 /// dropped (clients retry) instead of piling up tasks and buffers.
 const DNS_IN_FLIGHT: usize = 128;
+/// Connections relayed at once. Each TCP one holds ~80 KiB (stack and relay buffers), so 512 cap
+/// the tunnel at ~40 MB (500 measured: +38 MB), far above what a TV opens (tens). Beyond it new
+/// connections are reset and new UDP flows dropped, instead of growing until Android kills the
+/// app on a 2 GB device.
+const TCP_FLOW_LIMIT: u64 = 512;
+const UDP_FLOW_LIMIT: usize = 256;
 /// Time servers answered locally when no resolver answers. Encrypted DNS needs a correct clock
 /// (certificate dates) and a TV without a clock battery gets its time over the network: without
 /// this, a wrong clock would leave it with neither DNS nor a way to fix the time. Google Public
@@ -82,6 +88,8 @@ pub struct Stats {
     pub quic_refused: AtomicU64,
     /// Allowed queries no upstream resolver answered in time (a chosen TLS resolver unreachable).
     pub dns_failed: AtomicU64,
+    /// New connections or flows refused because the limit was reached.
+    pub flows_refused: AtomicU64,
     recent: Mutex<VecDeque<String>>,
 }
 
@@ -100,16 +108,17 @@ impl Stats {
         recent.truncate(RECENT_LIMIT);
     }
 
-    /// `queries,blocked,tcp,udp,quic_refused,dns_failed` then one recently blocked name per line, newest first.
+    /// `queries,blocked,tcp,udp,quic_refused,dns_failed,flows_refused` then one recently blocked name per line, newest first.
     pub fn encode(&self) -> String {
         let mut out = format!(
-            "{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{}",
             self.queries.load(Ordering::Relaxed),
             self.blocked.load(Ordering::Relaxed),
             self.tcp_active.load(Ordering::Relaxed),
             self.udp_active.load(Ordering::Relaxed),
             self.quic_refused.load(Ordering::Relaxed),
             self.dns_failed.load(Ordering::Relaxed),
+            self.flows_refused.load(Ordering::Relaxed),
         );
         for name in self.recent.lock().unwrap().iter() {
             out.push('\n');
@@ -327,7 +336,14 @@ impl Tunnel {
                         forward.await;
                     });
                 }
-                Verdict::Stack => {
+                Verdict::Stack { opens } => {
+                    if opens && self.stats.tcp_active.load(Ordering::Relaxed) >= TCP_FLOW_LIMIT {
+                        self.stats.flows_refused.fetch_add(1, Ordering::Relaxed);
+                        if let Some(reset) = crate::packet::parse(data).and_then(|p| crate::packet::tcp_reset(&p)) {
+                            let _ = to_tun.try_send(reset);
+                        }
+                        continue;
+                    }
                     if let Err(e) = stack_sink.send(data.to_vec()).await {
                         // Only a closed channel is fatal; a packet smoltcp rejects is not.
                         if e.kind() == io::ErrorKind::BrokenPipe {
@@ -404,9 +420,13 @@ async fn forward_dns(
 ) {
     let Some(answer) = upstream.exchange(&query).await else {
         stats.dns_failed.fetch_add(1, Ordering::Relaxed);
-        if let Some(question) = dns::parse_query(&query).filter(|q| TIME_SERVERS.contains(&q.name.as_str()))
-            && let Some(packet) = wrap_reply(&request, &dns::address_response(&query, &question, &GOOGLE_NTP, 60))
-        {
+        let Some(question) = dns::parse_query(&query) else { return };
+        let reply = if TIME_SERVERS.contains(&question.name.as_str()) {
+            dns::address_response(&query, &question, &GOOGLE_NTP, 60)
+        } else {
+            dns::servfail_response(&query, &question)
+        };
+        if let Some(packet) = wrap_reply(&request, &reply) {
             let _ = to_tun.send(packet).await;
         }
         return;
@@ -602,6 +622,10 @@ async fn relay_udp(udp: netstack_smoltcp::UdpSocket, filter: SharedFilter, stats
             }
         } else {
             flows.retain(|_, flow| !flow.is_closed());
+            if flows.len() >= UDP_FLOW_LIMIT {
+                context.stats.flows_refused.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
             start_udp_flow(&mut flows, key, data, &context);
         }
     }

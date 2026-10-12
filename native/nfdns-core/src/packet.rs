@@ -28,6 +28,13 @@ fn u32_at(data: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_be_bytes(data.get(at..at + 4)?.try_into().ok()?))
 }
 
+impl Packet<'_> {
+    /// The first packet of a new TCP connection (SYN without ACK).
+    pub fn is_tcp_open(&self) -> bool {
+        self.protocol == PROTO_TCP && self.header.get(13).is_some_and(|flags| flags & TCP_SYN != 0 && flags & TCP_ACK == 0)
+    }
+}
+
 /// UDP or TCP over IPv4/IPv6. Fragments, IPv6 extension headers and other protocols give `None`.
 pub fn parse(data: &[u8]) -> Option<Packet<'_>> {
     let (src, dst, protocol, body) = match data.first()? >> 4 {

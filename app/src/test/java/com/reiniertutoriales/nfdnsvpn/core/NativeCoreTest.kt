@@ -105,10 +105,13 @@ class NativeCoreTest {
 
     @Test
     fun parsesStats() {
-        val stats = TunnelStats.parse("12,3,4,5,6,7\nads.example.com\ntracker.example.org")!!
-        assertEquals(listOf(12L, 3L, 4L, 5L, 6L, 7L), listOf(stats.queries, stats.blocked, stats.tcp, stats.udp, stats.quicRefused, stats.dnsFailed))
+        val stats = TunnelStats.parse("12,3,4,5,6,7,8\nads.example.com\ntracker.example.org")!!
+        assertEquals(
+            listOf(12L, 3L, 4L, 5L, 6L, 7L, 8L),
+            listOf(stats.queries, stats.blocked, stats.tcp, stats.udp, stats.quicRefused, stats.dnsFailed, stats.flowsRefused),
+        )
         assertEquals(listOf("ads.example.com", "tracker.example.org"), stats.recent)
         assertNull(TunnelStats.parse(""))
-        assertNull(TunnelStats.parse("1,2,3,4,5"))
+        assertNull(TunnelStats.parse("1,2,3,4,5,6"))
     }
 }

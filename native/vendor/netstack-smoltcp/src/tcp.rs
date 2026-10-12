@@ -141,8 +141,10 @@ impl TcpListenerRunner {
                     TcpSocketBuffer::new(vec![0u8; tcp_send_buffer_size as usize]),
                 );
                 socket.set_keep_alive(Some(Duration::from_secs(28)));
-                // FIXME: It should follow system's setting. 7200 is Linux's default.
-                socket.set_timeout(Some(Duration::from_secs(7200)));
+                // nfdnsvpn: 2 min instead of Linux's 7200 s. With the 28 s keep-alive, a live app
+                // always answers in time; a peer that stopped answering (half-closed, gone) no
+                // longer holds this socket and its four 16 KiB buffers for two hours.
+                socket.set_timeout(Some(Duration::from_secs(120)));
                 // NO ACK delay
                 // socket.set_ack_delay(None);
 

@@ -81,7 +81,7 @@ openssl req -newkey rsa:2048 -nodes -subj "/CN=dns.e2e" -keyout "$WORK/dot-key.p
 printf 'subjectAltName=DNS:dns.e2e\n' > "$WORK/dot.ext"
 openssl x509 -req -in "$WORK/dot.csr" -CA "$WORK/ca.pem" -CAkey "$WORK/ca-key.pem" -CAcreateserial -days 1 -extfile "$WORK/dot.ext" -out "$WORK/dot.pem" 2>/dev/null
 cat > "$WORK/servers.py" <<'EOF'
-import functools, http.server, os, socket, ssl, struct, sys, threading
+import functools, http.server, os, socket, ssl, struct, sys, threading, time
 def udp_echo(family, address):
     s = socket.socket(family, socket.SOCK_DGRAM); s.bind((address, 9999))
     while True:
@@ -155,6 +155,7 @@ threading.Thread(target=https, args=(8443,), daemon=True).start()
 threading.Thread(target=tcp_echo, daemon=True).start()
 threading.Thread(target=banner, daemon=True).start()
 threading.Thread(target=https, args=(9443,), daemon=True).start()
+hung = []
 def dot():
     # DNS over TLS on 853: answers every A query with 192.0.2.53, so the checks can tell it
     # apart from the plain fake DNS (192.0.2.1). Several queries per connection.
@@ -176,6 +177,10 @@ def dot():
                     q = read(c, struct.unpack(">H", read(c, 2))[0])
                     end = 12
                     while q[end] != 0: end += q[end] + 1
+                    if b"\x04hang" in q[12:end] and not hung:
+                        # Once, a connection goes silent (network change, router dropping it).
+                        hung.append(True)
+                        while True: time.sleep(60)
                     answer = q[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00" + q[12:end + 5]
                     answer += b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + socket.inet_aton("192.0.2.53")
                     c.sendall(struct.pack(">H", len(answer)) + answer)
@@ -224,10 +229,34 @@ def query(server, name):
     q += b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00\x00\x01\x00\x01"
     s = socket.socket(socket.AF_INET6 if ":" in server else socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
     s.sendto(q, (server, 53)); r, _ = s.recvfrom(2048)
-    return socket.inet_ntoa(r[-4:])
+    # An error answer (SERVFAIL, NXDOMAIN) shows its code, not bytes of the question.
+    return socket.inet_ntoa(r[-4:]) if r[3] & 0x0F == 0 and r[7] else "rcode %d" % (r[3] & 0x0F)
 cmd = sys.argv[1]
 if cmd == "dns":
     print(query(sys.argv[2], sys.argv[3]))
+elif cmd == "many":
+    # Opens N TCP connections to the echo server and keeps them all open: how many got through.
+    held, ok, refused = [], 0, 0
+    for _ in range(int(sys.argv[2])):
+        c = socket.socket(); c.settimeout(5)
+        try:
+            c.connect(("192.0.2.1", 7000)); c.sendall(b"x")
+            if c.recv(1) == b"x": ok += 1
+            else: refused += 1
+        except OSError:
+            refused += 1
+        held.append(c)
+    print(ok, refused)
+elif cmd == "udpmany":
+    # N UDP flows at once to the echo server: how many came back.
+    import select
+    socks = [socket.socket(socket.AF_INET, socket.SOCK_DGRAM) for _ in range(int(sys.argv[2]))]
+    for u in socks: u.sendto(b"u", ("192.0.2.1", 9999))
+    answered, deadline = set(), time.time() + 3
+    while time.time() < deadline:
+        ready, _, _ = select.select([u for u in socks if u not in answered], [], [], 0.2)
+        for u in ready: u.recv(16); answered.add(u)
+    print(len(answered))
 elif cmd == "udp":
     server = sys.argv[2] if len(sys.argv) > 2 else "192.0.2.1"
     s = socket.socket(socket.AF_INET6 if ":" in server else socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
@@ -378,10 +407,17 @@ use_upstream "tls://192.0.2.1#dns.e2e"
 check "DNS por TLS al resolvedor elegido" "192.0.2.53" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 example.org)"
 check "DNS por TLS: el DNS forzado de la app también va cifrado" "192.0.2.53" "$(app "$PY" "$WORK/client.py" dns 203.0.113.53 example.net)"
 check "DNS por TLS: bloqueados se siguen contestando en local" "0.0.0.0" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 pubads.g.doubleclick.net)"
+# The connection goes silent with a query behind the stuck one: it is dropped and that query is
+# answered over a new connection, instead of waiting for TCP to give up minutes later.
+app "$PY" "$WORK/client.py" dns 10.111.0.1 hang.e2e >/dev/null 2>&1 &
+HANG=$!
+sleep 0.2
+check "DNS por TLS: conexión colgada sustituida sin perder consultas" "192.0.2.53" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 after-hang.example)"
+wait "$HANG" || true
 use_upstream "tls://192.0.2.1#otro.e2e"
-check "DNS por TLS: certificado de otro nombre rechazado" "no answer" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 example.com 2>/dev/null || echo 'no answer')"
+check "DNS por TLS: certificado de otro nombre rechazado (SERVFAIL)" "rcode 2" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 example.com 2>/dev/null || echo 'no answer')"
 use_upstream "tls://192.0.2.1:8853#dns.e2e"
-check "DNS por TLS caído: sin vuelta al DNS en claro" "no answer" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 example.edu 2>/dev/null || echo 'no answer')"
+check "DNS por TLS caído: sin vuelta al DNS en claro (SERVFAIL)" "rcode 2" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 example.edu 2>/dev/null || echo 'no answer')"
 # The clock must stay fixable when encrypted DNS fails (certificates need the right date).
 check "DNS por TLS caído: servidor de hora contestado en local" "216.239.35.12" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 time.android.com)"
 use_upstream "192.0.2.1"
@@ -423,7 +459,7 @@ for _ in $(seq 1 30); do
     active=$(grep '^stats' "$WORK/tunnel.log" | tail -n 1 | cut -d, -f3)
     [[ "$active" == 0 ]] && break
 done
-echo "INFO $(grep '^stats' "$WORK/tunnel.log" | tail -n 1) (consultas,bloqueadas,tcp,udp,quic rechazados)"
+echo "INFO $(grep '^stats' "$WORK/tunnel.log" | tail -n 1) (consultas,bloqueadas,tcp,udp,quic rechazados,dns fallidas,rechazos por tope)"
 check "Conexiones TCP liberadas tras cerrarse" "0" "$active"
 if (( BENCH )); then
     echo "BENCH --- latencia (con túnel / directo, sin túnel) ---"
@@ -461,6 +497,23 @@ if (( BENCH )); then
     for task in /proc/$TUNNEL_PID/task/*; do echo "$(cat $task/comm) $(awk '/^voluntary_ctxt_switches/ {print $2}' $task/status)"; done > "$WORK/wake1"
     echo "BENCH Despertares en reposo por hilo (10 s): $(paste -d' ' "$WORK/wake0" "$WORK/wake1" | awk '{printf "%s=%d ", $1, $4-$2}')"
 fi
+
+# Flow limits: past 512 TCP connections new ones are reset, past 256 UDP flows new ones are
+# dropped; memory stays bounded and connections work again once the others close.
+read -r tcp_ok tcp_refused < <(app "$PY" "$WORK/client.py" many 600)
+check "Tope TCP: 512 conexiones como mucho" "1" "$(( tcp_ok >= 500 && tcp_ok <= 520 && tcp_refused >= 80 ? 1 : 0 ))"
+echo "INFO tope TCP: $tcp_ok abiertas, $tcp_refused rechazadas"
+for _ in $(seq 1 30); do
+    sleep 1
+    active=$(grep '^stats' "$WORK/tunnel.log" | tail -n 1 | cut -d, -f3)
+    [[ "$active" == 0 ]] && break
+done
+check "Tras el tope, conexiones liberadas" "0" "$active"
+check "Tras el tope, TCP vuelve a funcionar" "hello through the tunnel" "$(app curl -s --max-time 5 http://192.0.2.1:8080/small)"
+udp_answered=$(app "$PY" "$WORK/client.py" udpmany 300)
+echo "INFO tope UDP: $udp_answered de 300 flujos con respuesta"
+check "Tope UDP: 256 flujos como mucho" "1" "$(( udp_answered >= 200 && udp_answered <= 256 ? 1 : 0 ))"
+check "Rechazos por tope contados" "1" "$(( $(grep '^stats' "$WORK/tunnel.log" | tail -n 1 | cut -d, -f7) > 0 ? 1 : 0 ))"
 
 kill -0 "$TUNNEL_PID" && echo "PASS túnel sigue vivo" || { echo "FAIL túnel caído"; cat "$WORK/tunnel.log"; FAILURES=$((FAILURES + 1)); }
 echo "Fallos: $FAILURES"

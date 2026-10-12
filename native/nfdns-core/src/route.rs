@@ -21,8 +21,9 @@ pub enum Verdict {
     Reply { packet: Vec<u8>, blocked: Option<String> },
     /// Allowed DNS query: send `query` upstream and wrap the answer with [`wrap_reply`].
     Forward { query: Vec<u8>, name: String },
-    /// Ordinary traffic for the TCP/IP stack and the relay (full mode only).
-    Stack,
+    /// Ordinary traffic for the TCP/IP stack and the relay (full mode only). `opens` marks the
+    /// first packet of a new TCP connection.
+    Stack { opens: bool },
 }
 
 fn reset(p: &packet::Packet<'_>) -> Verdict {
@@ -65,7 +66,7 @@ pub fn classify(filter: &Filter, intercepted: &[IpAddr], data: &[u8]) -> Verdict
     match (refused, p.protocol) {
         (true, PROTO_TCP) => reset(&p),
         (true, _) => Verdict::Drop,
-        (false, _) => Verdict::Stack,
+        (false, _) => Verdict::Stack { opens: p.is_tcp_open() },
     }
 }
 
@@ -168,9 +169,9 @@ mod tests {
     fn ordinary_traffic_goes_to_the_stack() {
         let f = sample_filter();
         let https = tcp_syn(ip("10.111.0.2"), ip("203.0.113.9"), 50000, 443, 7);
-        assert_eq!(classify(&f, &intercepted(), &https), Verdict::Stack);
+        assert_eq!(classify(&f, &intercepted(), &https), Verdict::Stack { opens: true });
         let quic = udp_packet(ip("10.111.0.2"), ip("203.0.113.9"), 50000, 443, b"quic");
-        assert_eq!(classify(&f, &intercepted(), &quic), Verdict::Stack);
+        assert_eq!(classify(&f, &intercepted(), &quic), Verdict::Stack { opens: false });
         assert_eq!(classify(&f, &intercepted(), &[1, 2, 3]), Verdict::Drop);
     }
 }

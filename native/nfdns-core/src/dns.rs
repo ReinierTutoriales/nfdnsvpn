@@ -7,6 +7,7 @@ const TYPE_CNAME: u16 = 5;
 /// connection, which is what the SNI filter reads.
 pub const TYPE_SVCB: u16 = 64;
 pub const TYPE_HTTPS: u16 = 65;
+const RCODE_SERVFAIL: u16 = 2;
 const RCODE_NXDOMAIN: u16 = 3;
 const CLASS_IN: u16 = 1;
 const HEADER_LEN: usize = 12;
@@ -174,6 +175,12 @@ pub fn address_response(query: &[u8], question: &Question, addresses: &[[u8; 4]]
         _ => Vec::new(),
     };
     response(query, question, 0, &records, ttl)
+}
+
+/// "Server failure": tells the client at once that no answer is coming, instead of letting it
+/// wait for its own timeout and retry into the same failure.
+pub fn servfail_response(query: &[u8], question: &Question) -> Vec<u8> {
+    response(query, question, RCODE_SERVFAIL, &[], 0)
 }
 
 /// "No such domain": the answer that tells Firefox not to turn on its own DNS over HTTPS.

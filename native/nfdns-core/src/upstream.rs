@@ -23,6 +23,10 @@ use tokio_rustls::client::TlsStream;
 
 /// Per query, the plain or the TLS exchange.
 const QUERY_TIMEOUT: Duration = Duration::from_millis(2500);
+/// A query unanswered this long on an open connection means the connection is dead. Resolvers
+/// answer in tens of milliseconds and a slow recursive lookup in about a second; shorter than
+/// [`QUERY_TIMEOUT`], so the queries still waiting can be retried on a new connection in time.
+const STALE_AFTER: Duration = Duration::from_millis(1800);
 /// TCP connect plus TLS handshake to one resolver.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// A TLS connection without queries for this long is closed.
@@ -112,6 +116,16 @@ impl DotServer {
 
 type Request = (Vec<u8>, oneshot::Sender<Vec<u8>>);
 
+/// A query on the wire: as the app sent it (its own ID), where the answer goes, and when.
+struct Waiting {
+    query: Vec<u8>,
+    reply: oneshot::Sender<Vec<u8>>,
+    sent: Instant,
+}
+
+/// Queries on one connection, by their wire ID.
+type Pending = HashMap<u16, Waiting>;
+
 pub struct DotClient {
     servers: Arc<[DotServer]>,
     connector: TlsConnector,
@@ -166,12 +180,22 @@ impl DotClient {
 async fn run_session(servers: Arc<[DotServer]>, connector: TlsConnector, mut requests: mpsc::Receiver<Request>) {
     let mut preferred = 0;
     while let Some(first) = requests.recv().await {
-        // Without a connection the query fails at once (its reply is dropped): no plain fallback.
-        let Some((stream, index)) = connect(&servers, &connector, preferred).await else { continue };
-        // Start from the resolver that worked, so a dead one costs a timeout only once.
-        preferred = index;
-        if !serve(stream, first, &mut requests).await {
-            preferred = (index + 1) % servers.len();
+        let mut batch = vec![first];
+        // Without a connection the batch fails at once (replies dropped): no plain fallback.
+        while let Some((stream, index)) = connect(&servers, &connector, preferred).await {
+            // Start from the resolver that worked, so a dead one costs a timeout only once.
+            preferred = index;
+            match serve(stream, batch, &mut requests).await {
+                Ok(()) => break,
+                // Dead connection: the next resolver, carrying the queries still waited for.
+                Err(waiting) => {
+                    preferred = (index + 1) % servers.len();
+                    if waiting.is_empty() {
+                        break;
+                    }
+                    batch = waiting;
+                }
+            }
         }
     }
 }
@@ -193,39 +217,45 @@ async fn connect(servers: &[DotServer], connector: &TlsConnector, start: usize) 
 }
 
 /// Relays queries over one connection until it fails (false) or stays idle (true). Queries get
-/// their own IDs on the wire, so answers in any order find their way back.
-async fn serve(stream: TlsStream<TcpStream>, first: Request, requests: &mut mpsc::Receiver<Request>) -> bool {
+/// their own IDs on the wire, so answers in any order find their way back. A query left
+/// unanswered past [`STALE_AFTER`] means the connection is dead even if TCP has not noticed yet
+/// (network change, a router dropping the state): it is dropped and the queries still waited
+/// for go to the next resolver, instead of every query timing out until TCP gives up minutes
+/// later. Returns the still-waiting queries if the connection failed.
+async fn serve(stream: TlsStream<TcpStream>, batch: Vec<Request>, requests: &mut mpsc::Receiver<Request>) -> Result<(), Vec<Request>> {
     let (mut reader, mut writer) = tokio::io::split(stream);
-    let mut pending: HashMap<u16, ([u8; 2], oneshot::Sender<Vec<u8>>)> = HashMap::new();
+    let mut pending = Pending::new();
     let mut next_id: u16 = 0;
     let mut inbound = Vec::with_capacity(ANSWER_MAX);
-    if !send(&mut writer, first, &mut pending, &mut next_id).await {
-        return false;
+    // Queries whose caller is still waiting, to retry on the next connection.
+    let still_waiting =
+        |pending: Pending| -> Vec<Request> { pending.into_values().filter(|w| !w.reply.is_closed()).map(|w| (w.query, w.reply)).collect() };
+    for request in batch {
+        if !send(&mut writer, request, &mut pending, &mut next_id).await {
+            return Err(still_waiting(pending));
+        }
     }
     loop {
+        let oldest = pending.values().map(|waiting| waiting.sent).min();
         tokio::select! {
             request = requests.recv() => match request {
-                Some(request) => if !send(&mut writer, request, &mut pending, &mut next_id).await { return false },
-                None => return true,
+                Some(request) => if !send(&mut writer, request, &mut pending, &mut next_id).await { return Err(still_waiting(pending)) },
+                None => return Ok(()),
             },
             read = reader.read_buf(&mut inbound) => match read {
                 Ok(n) if n > 0 => deliver(&mut inbound, &mut pending),
-                _ => return false,
+                _ => return Err(still_waiting(pending)),
             },
             _ = tokio::time::sleep(IDLE), if pending.is_empty() => {
                 let _ = writer.shutdown().await;
-                return true;
+                return Ok(());
             }
+            _ = tokio::time::sleep_until(oldest.unwrap_or_else(Instant::now) + STALE_AFTER), if oldest.is_some() => return Err(still_waiting(pending)),
         }
     }
 }
 
-async fn send(
-    writer: &mut WriteHalf<TlsStream<TcpStream>>,
-    (mut query, reply): Request,
-    pending: &mut HashMap<u16, ([u8; 2], oneshot::Sender<Vec<u8>>)>,
-    next_id: &mut u16,
-) -> bool {
+async fn send(writer: &mut WriteHalf<TlsStream<TcpStream>>, (query, reply): Request, pending: &mut Pending, next_id: &mut u16) -> bool {
     let Ok(length) = u16::try_from(query.len()) else { return true };
     // Skip IDs still waiting (a slow answer) so two queries never share one.
     while pending.contains_key(next_id) {
@@ -233,28 +263,26 @@ async fn send(
     }
     let id = *next_id;
     *next_id = next_id.wrapping_add(1);
-    let original = [query[0], query[1]];
-    query[..2].copy_from_slice(&id.to_be_bytes());
-    pending.retain(|_, (_, waiting)| !waiting.is_closed());
-    pending.insert(id, (original, reply));
     let mut frame = Vec::with_capacity(query.len() + 2);
     frame.extend_from_slice(&length.to_be_bytes());
-    frame.extend_from_slice(&query);
+    frame.extend_from_slice(&id.to_be_bytes());
+    frame.extend_from_slice(&query[2..]);
+    pending.insert(id, Waiting { query, reply, sent: Instant::now() });
     writer.write_all(&frame).await.is_ok() && writer.flush().await.is_ok()
 }
 
 /// Hands every complete answer in `inbound` to its query, with the app's ID back in place.
-fn deliver(inbound: &mut Vec<u8>, pending: &mut HashMap<u16, ([u8; 2], oneshot::Sender<Vec<u8>>)>) {
+fn deliver(inbound: &mut Vec<u8>, pending: &mut Pending) {
     let mut at = 0;
     while inbound.len() - at >= 2 {
         let length = u16::from_be_bytes([inbound[at], inbound[at + 1]]) as usize;
         let Some(message) = inbound.get(at + 2..at + 2 + length) else { break };
         if length >= 2
-            && let Some((original, reply)) = pending.remove(&u16::from_be_bytes([message[0], message[1]]))
+            && let Some(waiting) = pending.remove(&u16::from_be_bytes([message[0], message[1]]))
         {
             let mut answer = message.to_vec();
-            answer[..2].copy_from_slice(&original);
-            let _ = reply.send(answer);
+            answer[..2].copy_from_slice(&waiting.query[..2]);
+            let _ = waiting.reply.send(answer);
         }
         at += 2 + length;
     }
@@ -281,11 +309,11 @@ mod tests {
 
     #[test]
     fn delivers_pipelined_answers_in_any_order() {
-        let mut pending = HashMap::new();
+        let mut pending = Pending::new();
         let (first, mut first_answer) = oneshot::channel();
         let (second, mut second_answer) = oneshot::channel();
-        pending.insert(7, ([0xAA, 0x01], first));
-        pending.insert(8, ([0xBB, 0x02], second));
+        pending.insert(7, Waiting { query: vec![0xAA, 0x01, b'?'], reply: first, sent: Instant::now() });
+        pending.insert(8, Waiting { query: vec![0xBB, 0x02, b'?'], reply: second, sent: Instant::now() });
         // The answer to 8, then half of the answer to 7.
         let mut inbound = vec![0, 3, 0, 8, b'x', 0, 3, 0, 7];
         deliver(&mut inbound, &mut pending);
