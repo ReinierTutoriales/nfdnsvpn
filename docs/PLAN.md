@@ -365,7 +365,11 @@ Para esas apps queda el último recurso: **cortarles internet por completo** (ab
     reintenta 5 veces (1, 2, 4, 8 y 16 s); un cambio de red posterior también reintenta. Un
     reintento que ya no toca (protección recuperada, otro más reciente, ciclo terminado) no hace
     nada: no corta conexiones. «Protegiendo» solo se anuncia si la interfaz en uso se creó tras el
-    último cambio avisado (también al arrancar); un cambio pone «Protección incompleta» al momento. Sin
+    último cambio avisado (también al arrancar); un cambio pone «Protección incompleta» al momento.
+    El cambio pendiente, el estado de ejecución y la señal de parada van bajo un mismo cerrojo: un
+    reintento valida su ficha y actúa en un solo paso; solo el primer cambio mientras el túnel
+    corre lo detiene (no quedan señales sueltas) y, si aun así el túnel vuelve sin nada que
+    aplicar, el ciclo sigue en vez de terminar. Sin
     permiso de VPN (revocado) el servicio termina; una parada durante la sustitución cierra la
     interfaz nueva sin usarla. Cada reconstrucción usa la red del momento en que se establece; un
     cambio durante ella provoca otra, así que el último cambio siempre acaba aplicado (puede

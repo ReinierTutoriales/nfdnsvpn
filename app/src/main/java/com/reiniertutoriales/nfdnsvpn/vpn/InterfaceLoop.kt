@@ -1,7 +1,6 @@
 package com.reiniertutoriales.nfdnsvpn.vpn
 
 import java.io.Closeable
-import java.util.concurrent.atomic.AtomicBoolean
 
 /** What [InterfaceLoop] drives: the native tunnel. [run] blocks until [stop]. */
 interface TunnelPort {
@@ -57,11 +56,18 @@ class InterfaceLoop(
         fun retryDelayMs(attempt: Int) = 1000L shl (attempt - 1)
     }
 
-    private val rebuild = AtomicBoolean(false)
     @Volatile private var stopping = false
 
-    /** Health, retries and the pending flag change together under this lock, never out of order. */
+    /**
+     * Guards the pending change, whether the tunnel is running and the stop signal, together with
+     * health and retries: a change, a retry and a recovery are each decided and carried out
+     * inside it, so none can act on a state another has already moved past.
+     */
     private val lock = Any()
+    /** A change not yet consumed by a rebuild. */
+    private var rebuild = false
+    /** The tunnel is (about to be) running and only a stop() makes it return. */
+    private var inRun = false
     private var failedRebuilds = 0
     /**
      * Only the retry holding the current token may fire. It changes when a rebuild succeeds,
@@ -72,11 +78,19 @@ class InterfaceLoop(
 
     /** From any thread: the network changed. Not protected until an interface for it is in use. */
     fun networkChanged() {
-        synchronized(lock) {
-            rebuild.set(true)
-            onHealth(Health.DEGRADED, PENDING)
-        }
-        tunnel.stop()
+        synchronized(lock) { changed() }
+    }
+
+    /**
+     * With [lock] held. The tunnel is stopped only for the first change while it runs: a stop
+     * for a change that is already pending, or while no run is going on, would be left over
+     * and end a later run with nothing to apply.
+     */
+    private fun changed() {
+        val alreadyPending = rebuild
+        rebuild = true
+        onHealth(Health.DEGRADED, PENDING)
+        if (inRun && !alreadyPending) tunnel.stop()
     }
 
     /** From any thread: user stop or revocation. */
@@ -91,16 +105,32 @@ class InterfaceLoop(
         try {
             // Protected only if no change came in since [initial] was established (start included).
             synchronized(lock) {
-                if (!rebuild.get()) onHealth(Health.PROTECTED, null)
+                if (!rebuild) onHealth(Health.PROTECTED, null)
             }
-            // A change reported before this run started (its stop() had nothing to stop yet).
-            if (rebuild.get()) tunnel.stop()
             while (true) {
-                val failure = tunnel.run()
-                if (stopping) return Outcome(End.STOPPED)
-                if (!rebuild.getAndSet(false)) {
-                    return if (failure.isEmpty()) Outcome(End.STOPPED) else Outcome(End.FAILED, failure)
+                // Either a change is already pending (rebuild now), or run until one arrives.
+                val pending = synchronized(lock) {
+                    if (rebuild) {
+                        rebuild = false
+                        true
+                    } else {
+                        inRun = true
+                        false
+                    }
                 }
+                if (!pending) {
+                    val failure = tunnel.run()
+                    val changedMeanwhile = synchronized(lock) {
+                        inRun = false
+                        rebuild.also { rebuild = false }
+                    }
+                    if (stopping) return Outcome(End.STOPPED)
+                    if (!changedMeanwhile) {
+                        if (failure.isNotEmpty()) return Outcome(End.FAILED, failure)
+                        continue // a wake with nothing to apply never ends the loop
+                    }
+                }
+                if (stopping) return Outcome(End.STOPPED)
                 val next = try {
                     establish()
                 } catch (e: Exception) {
@@ -118,7 +148,7 @@ class InterfaceLoop(
                     failedRebuilds = 0
                     retryToken++
                     // Another change came in during establish: its routes are still to be applied.
-                    if (!rebuild.get()) onHealth(Health.PROTECTED, null)
+                    if (!rebuild) onHealth(Health.PROTECTED, null)
                 }
             }
         } finally {
@@ -138,10 +168,11 @@ class InterfaceLoop(
         }
     }
 
+    /** Validating the token and acting on it are one step: no recovery or end can come between. */
     private fun retry(token: Long) {
         synchronized(lock) {
             if (stopping || token != retryToken) return
+            changed()
         }
-        networkChanged()
     }
 }

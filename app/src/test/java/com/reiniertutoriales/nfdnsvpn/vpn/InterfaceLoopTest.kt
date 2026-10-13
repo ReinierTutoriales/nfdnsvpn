@@ -59,12 +59,14 @@ class InterfaceLoopTest {
         /** Health reports and establish calls, in order. */
         val events = CopyOnWriteArrayList<String>()
         val scheduled = CopyOnWriteArrayList<Pair<Long, () -> Unit>>()
+        /** Called inside the loop's health report (that is, with its lock held). */
+        @Volatile var onReport: (String) -> Unit = {}
         @Volatile var onEstablish: (Harness) -> FakeInterface? = { h -> h.newInterface() }
         val initial = FakeInterface(100, 1)
         val loop = InterfaceLoop(
             tunnel,
             establish = { events += "establish"; onEstablish(this) },
-            onHealth = { state, _ -> events += state.name },
+            onHealth = { state, _ -> events += state.name; onReport(state.name) },
             schedule = { delay, retry -> scheduled += delay to retry },
         )
         @Volatile var outcome: InterfaceLoop.Outcome? = null
@@ -106,7 +108,8 @@ class InterfaceLoopTest {
     @Test
     fun aChangeBeforeTheStartIsNeverReportedProtectedUntilApplied() {
         val h = Harness(changeBeforeRun = true)
-        awaitUntil("rebuild and second run") { h.tunnel.runs.get() == 2 }
+        // The pending change is applied before the tunnel ever runs on the stale interface.
+        awaitUntil("rebuild, then the first run") { h.tunnel.runs.get() == 1 }
         assertEquals("degraded first, protected only once rebuilt", listOf("DEGRADED", "establish", "PROTECTED"), h.events)
         assertEquals(1, h.built.size)
         h.loop.stop()
@@ -131,7 +134,8 @@ class InterfaceLoopTest {
         h.network = 2
         h.loop.networkChanged()
         assertTrue(first.await(5, TimeUnit.SECONDS))
-        awaitUntil("second rebuild in use") { h.tunnel.runs.get() == 3 }
+        // The pending change is rebuilt at once, without running on the half-updated interface.
+        awaitUntil("second rebuild in use") { h.tunnel.runs.get() == 2 }
         assertEquals(
             "no PROTECTED between the two rebuilds",
             listOf("PROTECTED", "DEGRADED", "establish", "DEGRADED", "establish", "PROTECTED"),
@@ -169,7 +173,8 @@ class InterfaceLoopTest {
         h.network = 4
         h.loop.networkChanged()
         release.countDown()
-        awaitUntil("protected again") { h.health().last() == "PROTECTED" && h.tunnel.runs.get() == 3 }
+        awaitUntil("protected again") { h.health().last() == "PROTECTED" && h.tunnel.runs.get() == 2 }
+        assertEquals("changes while not running stop nothing", 1, h.tunnel.stops.get())
         assertEquals("exactly one more rebuild, on the latest network", listOf(2, 4), h.built.map { it.network })
         h.loop.stop()
         h.finish()
@@ -291,5 +296,81 @@ class InterfaceLoopTest {
         assertTrue("the new interface is closed", h.built.single().closed)
         assertTrue("and never read", h.tunnel.fds.isEmpty())
         assertTrue(h.initial.closed)
+    }
+
+    @Test
+    fun aRetryHeldWhileProtectionIsRestoredDoesNothingWhenReleased() {
+        val h = Harness()
+        h.onEstablish = { throw IllegalStateException("route refused") }
+        awaitUntil("first run") { h.tunnel.runs.get() == 1 }
+        h.loop.networkChanged()
+        awaitUntil("retry scheduled") { h.scheduled.size == 1 }
+
+        // Protection is being restored: the recovery holds the loop's lock (its report blocks).
+        val inRecovery = CountDownLatch(1)
+        val finishRecovery = CountDownLatch(1)
+        h.onReport = { state ->
+            if (state == "PROTECTED") {
+                inRecovery.countDown()
+                finishRecovery.await(5, TimeUnit.SECONDS)
+            }
+        }
+        h.onEstablish = { harness -> harness.newInterface() }
+        h.loop.networkChanged()
+        assertTrue(inRecovery.await(5, TimeUnit.SECONDS))
+        // The old retry fires now: it cannot validate its token until the recovery is done.
+        val retry = thread { h.scheduled.single().second() }
+        awaitUntil("retry waiting for the recovery") { retry.state == Thread.State.BLOCKED }
+        val stops = h.tunnel.stops.get()
+        finishRecovery.countDown()
+        retry.join(5000)
+        assertEquals("no cut", stops, h.tunnel.stops.get())
+        assertEquals("no extra rebuild", 1, h.built.size)
+        assertEquals("still protected", "PROTECTED", h.health().last())
+        h.loop.stop()
+        h.finish()
+    }
+
+    @Test
+    fun aStopSignalWithNothingToApplyNeverEndsTheLoop() {
+        val h = Harness()
+        awaitUntil("first run") { h.tunnel.runs.get() == 1 }
+        h.loop.networkChanged()
+        awaitUntil("rebuilt and running") { h.tunnel.runs.get() == 2 && h.health().last() == "PROTECTED" }
+        // A stop signal arriving late, after its change was already applied.
+        h.tunnel.stop()
+        awaitUntil("running again") { h.tunnel.runs.get() == 3 }
+        assertEquals("the loop goes on", null, h.outcome)
+        assertEquals("nothing rebuilt for it", 1, h.built.size)
+        assertEquals("still protected", "PROTECTED", h.health().last())
+        h.loop.stop()
+        assertEquals(InterfaceLoop.End.STOPPED, h.finish().end)
+    }
+
+    @Test
+    fun aStopHeldWhileTheChangeIsSignalledIsTheOnlyOne() {
+        val h = Harness()
+        awaitUntil("first run") { h.tunnel.runs.get() == 1 }
+        // The first change's signal is held inside the loop's lock, before its stop. While it is
+        // held, the loop cannot consume the change, and a second change made at that point (the
+        // first still pending) adds no stop of its own.
+        val stopsWhileHeld = AtomicInteger(-1)
+        val runsWhileHeld = AtomicInteger(-1)
+        h.onReport = { state ->
+            if (state == "DEGRADED" && stopsWhileHeld.get() == -1) {
+                stopsWhileHeld.set(h.tunnel.stops.get())
+                h.loop.networkChanged() // same thread, lock is reentrant: the first is still pending
+                runsWhileHeld.set(h.tunnel.runs.get())
+            }
+        }
+        h.loop.networkChanged()
+        assertEquals("nothing stopped while held", 0, stopsWhileHeld.get())
+        assertEquals("the loop did not move while held", 1, runsWhileHeld.get())
+        awaitUntil("rebuilt and running") { h.tunnel.runs.get() == 2 && h.health().last() == "PROTECTED" }
+        assertEquals("one stop for both changes", 1, h.tunnel.stops.get())
+        assertEquals("one rebuild", 1, h.built.size)
+        assertEquals("the loop goes on", null, h.outcome)
+        h.loop.stop()
+        h.finish()
     }
 }
