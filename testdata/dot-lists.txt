@@ -1,0 +1,79 @@
+# Custom DNS-over-TLS lists, checked by the app (DnsProvidersTest) and by the core
+# (upstream::tests): both must give the same result for every line.
+# Format: <result> <list>, where result is the number of resolvers accepted or the reason the
+# whole list is refused. The list is the rest of the line (may be empty). Lengths are in UTF-8
+# bytes: the second TOO_LONG list has 1024 characters but 1025 bytes.
+1 tls://9.9.9.9#dns.quad9.net
+1 tls://9.9.9.9:853#dns.quad9.net
+2  tls://9.9.9.9#dns.quad9.net , tls://[2620:fe::fe]:853#dns.quad9.net
+1 tls://[2620:fe::fe]#dns.quad9.net
+1 tls://[::ffff:1.1.1.1]#cloudflare-dns.com
+1 tls://[1:2:3:4:5:6:7::]#a.b
+1 tls://[1:2:3:4:5:6:1.2.3.4]#a.b
+1 tls://[0001:2:3:4:5:6:7:8]#a.b
+1 tls://192.168.1.10:1#dns.lan
+1 tls://10.0.0.1:65535#dns.lan
+1 tls://127.0.0.1#localhost
+1 tls://1.1.1.1#Cloudflare-DNS.com
+1 tls://1.1.1.1#a
+1 tls://1.1.1.1#1a.b2
+2 tls://1.1.1.1#a.b,,tls://1.0.0.1#a.b,
+8 tls://10.0.0.1#a,tls://10.0.0.2#a,tls://10.0.0.3#a,tls://10.0.0.4#a,tls://10.0.0.5#a,tls://10.0.0.6#a,tls://10.0.0.7#a,tls://10.0.0.8#a
+1 tls://1.1.1.1#abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijk.com
+1 tls://1.1.1.1#aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.com
+5 tls://10.0.0.1#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com,tls://10.0.0.2#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com,tls://10.0.0.3#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com,tls://10.0.0.4#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com,tls://10.0.0.5#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com
+TOO_LONG tls://10.0.0.1#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com,tls://10.0.0.2#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com,tls://10.0.0.3#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com,tls://10.0.0.4#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com,tls://10.0.0.5#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com
+TOO_LONG tls://10.0.0.1#ñaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com,tls://10.0.0.2#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com,tls://10.0.0.3#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com,tls://10.0.0.4#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com,tls://10.0.0.5#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com
+EMPTY
+EMPTY  , ,
+TOO_MANY tls://10.0.0.1#a,tls://10.0.0.2#a,tls://10.0.0.3#a,tls://10.0.0.4#a,tls://10.0.0.5#a,tls://10.0.0.6#a,tls://10.0.0.7#a,tls://10.0.0.8#a,tls://10.0.0.9#a
+FORMAT 9.9.9.9
+FORMAT 9.9.9.9:853
+FORMAT tls://9.9.9.9
+FORMAT TLS://9.9.9.9#dns.quad9.net
+FORMAT https://9.9.9.9#dns.quad9.net
+FORMAT tls://9.9.9.9#dns.quad9.net,9.9.9.9
+FORMAT tls://#dns.quad9.net
+ADDRESS tls://dns.quad9.net#dns.quad9.net
+ADDRESS tls://256.1.1.1#a.b
+ADDRESS tls://1.1.1#a.b
+ADDRESS tls://1.1.1.1.1#a.b
+ADDRESS tls://01.1.1.1#a.b
+ADDRESS tls://1.1.1.1 #a.b
+ADDRESS tls://2620:fe::fe#dns.quad9.net
+ADDRESS tls://[2620:fe::fe#a.b
+ADDRESS tls://[2620:fe::fg]#a.b
+ADDRESS tls://[1:2:3:4:5:6:7:8:9]#a.b
+ADDRESS tls://[1:2:3:4:5:6:7::8]#a.b
+ADDRESS tls://[1::2::3]#a.b
+ADDRESS tls://[12345::1]#a.b
+ADDRESS tls://[1.2.3.4::]#a.b
+ADDRESS tls://[fe80::1%eth0]#a.b
+ADDRESS tls://[]#a.b
+ADDRESS tls://0.0.0.0#a.b
+ADDRESS tls://[::]#a.b
+ADDRESS tls://255.255.255.255#a.b
+ADDRESS tls://224.0.0.1#a.b
+ADDRESS tls://[ff02::1]#a.b
+PORT tls://9.9.9.9:0#dns.quad9.net
+PORT tls://9.9.9.9:65536#dns.quad9.net
+PORT tls://9.9.9.9:0853#dns.quad9.net
+PORT tls://9.9.9.9:#dns.quad9.net
+PORT tls://9.9.9.9:85a#dns.quad9.net
+PORT tls://9.9.9.9:+853#dns.quad9.net
+PORT tls://[2620:fe::fe]:99999#a.b
+PORT tls://[2620:fe::fe]853#a.b
+NAME tls://9.9.9.9#
+NAME tls://9.9.9.9#dns.quad9.net.
+NAME tls://9.9.9.9#-dns.quad9.net
+NAME tls://9.9.9.9#dns-.quad9.net
+NAME tls://9.9.9.9#dns..quad9.net
+NAME tls://9.9.9.9#dns_quad9.net
+NAME tls://9.9.9.9#9.9.9.9
+NAME tls://9.9.9.9#a.123
+NAME tls://9.9.9.9#dns.quad9.net#x
+NAME tls://9.9.9.9#dñs.quad9.net
+NAME tls://1.1.1.1#abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijkl.com
+NAME tls://1.1.1.1#aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaaaaaaa.aaaa
+DUPLICATE tls://9.9.9.9#dns.quad9.net,tls://9.9.9.9:853#otro.net
+FORMAT tls://9.9.9.9#dns.quad9.net,tls://bad

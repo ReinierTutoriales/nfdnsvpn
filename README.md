@@ -42,7 +42,7 @@ Lo que hacen ambos modos:
   y 3400 IPs, unos 7,6 MB de RAM. Bloquea los 131 dominios del test de d3ward y ninguno de los 50
   dominios críticos de TV medidos.
 - Pantalla mínima: un botón grande de activar/desactivar, el estado y el número de bloqueos.
-- **Opciones** (opcional): elegir el servidor DNS cifrado, cambiar de modo, permitir un dominio bloqueado eligiéndolo con el
+- **Opciones** (opcional): elegir el servidor DNS cifrado (o hasta 8 propios `tls://IP[:puerto]#nombre`, validados enteros), cambiar de modo, permitir un dominio bloqueado eligiéndolo con el
   mando, elegir listas (incluidas HaGeZi Pro, más ligera, OISD small/big y las de uBlock Origin, de las que se usan sus
   reglas de dominio), quitar dominios permitidos, excluir apps que fallen, vigilar apps y bloquear los dominios que contactan, dejar apps sin internet, arranque al encender
   y estado/consumo.

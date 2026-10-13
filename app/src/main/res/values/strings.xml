@@ -27,8 +27,15 @@
     <string name="dns_custom">Personalizado: %1$s</string>
     <string name="dns_chosen">✓ %1$s</string>
     <string name="dns_custom_title">DNS personalizado (cifrado)</string>
-    <string name="dns_custom_hint">Formato tls://IP#nombre del certificado, separados por comas. Ejemplo: tls://9.9.9.9#dns.quad9.net</string>
-    <string name="dns_custom_invalid">Formato no válido: tls://IP#nombre</string>
+    <string name="dns_custom_hint">Formato tls://IP[:puerto]#nombre del certificado, IPv6 entre corchetes, separados por comas (máximo: %1$d). Ejemplo: tls://9.9.9.9#dns.quad9.net</string>
+    <string name="dns_invalid_too_long">Texto demasiado largo. Máximo de caracteres: %1$d</string>
+    <string name="dns_invalid_empty">Escribe al menos un servidor: tls://IP#nombre</string>
+    <string name="dns_invalid_too_many">Demasiados servidores. Máximo: %1$d</string>
+    <string name="dns_invalid_format">Servidor n.º %1$d: el formato es tls://IP[:puerto]#nombre</string>
+    <string name="dns_invalid_address">Servidor n.º %1$d: la dirección debe ser una IPv4 o una [IPv6] utilizable</string>
+    <string name="dns_invalid_port">Servidor n.º %1$d: el puerto va de 1 a 65535</string>
+    <string name="dns_invalid_name">Servidor n.º %1$d: nombre del certificado no válido</string>
+    <string name="dns_invalid_duplicate">Servidor n.º %1$d: dirección y puerto repetidos</string>
     <string name="settings_flows_refused">Conexiones rechazadas por el tope de seguridad (512 TCP, 256 UDP): %1$d</string>
     <string name="settings_owner_unknown">Con reglas por app, descartadas por dueño no encontrado: %1$d. Dueño no encontrado: sin coincidencia %2$d · sin respuesta a tiempo %3$d · cola llena %4$d · búsqueda caída %5$d</string>
     <string name="settings_dns_failed">Consultas sin respuesta del servidor DNS: %1$d</string>

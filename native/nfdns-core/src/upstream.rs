@@ -50,16 +50,14 @@ pub enum Upstream {
 }
 
 impl Upstream {
-    /// Comma-separated resolvers. `tls://IP[:port]#name` entries make it DNS over TLS (the name
-    /// is checked against the certificate); otherwise `IP` or `IP:port`, plain. Bad entries are
-    /// skipped.
+    /// A list starting with `tls://` is DNS over TLS and must pass [`parse_dot_list`] whole: one
+    /// bad entry refuses it, giving no resolver (every allowed query fails), never plain DNS.
+    /// Otherwise `IP` or `IP:port` entries, plain (test bench only); bad ones are skipped.
     pub fn parse(list: &str) -> Upstream {
-        let entries: Vec<&str> = list.split(',').map(str::trim).filter(|e| !e.is_empty()).collect();
-        let tls: Vec<DotServer> = entries.iter().filter_map(|e| e.strip_prefix("tls://")).filter_map(DotServer::parse).collect();
-        if !tls.is_empty() {
-            return Upstream::Tls(DotClient::new(tls, Vec::new()));
+        if list.trim_start().starts_with(TLS_SCHEME) {
+            return parse_dot_list(list).map_or(Upstream::Plain(Vec::new()), |servers| Upstream::Tls(DotClient::new(servers, Vec::new())));
         }
-        Upstream::Plain(entries.iter().filter_map(|e| plain_address(e)).collect())
+        Upstream::Plain(list.split(',').filter_map(|e| plain_address(e.trim())).collect())
     }
 
     /// The answer to `query`, or `None` if no resolver gave one in time.
@@ -110,14 +108,124 @@ pub struct DotServer {
     pub name: ServerName<'static>,
 }
 
-impl DotServer {
-    /// `IP[:port]#name`.
-    fn parse(entry: &str) -> Option<DotServer> {
-        let (address, name) = entry.split_once('#')?;
-        let address =
-            address.parse::<SocketAddr>().ok().or_else(|| address.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, DOT_PORT)))?;
-        Some(DotServer { address, name: ServerName::try_from(name.to_string()).ok()? })
+/// Most resolvers in a list. They are tried [`CONNECT_STAGGER`] apart: the eighth starts at
+/// 1.75 s, just inside [`STALE_AFTER`]; a later one would start after a waiting query is already
+/// given up on that connection, so it would only add sockets.
+pub const MAX_DOT_SERVERS: usize = 8;
+/// Longest list accepted, checked before anything else: room for [`MAX_DOT_SERVERS`] entries
+/// with long certificate names (a typical entry is about 40 characters) while bounding what is
+/// copied and parsed from the settings.
+pub const MAX_DOT_LIST_LEN: usize = 1024;
+const TLS_SCHEME: &str = "tls://";
+
+/// Why a DNS-over-TLS list is refused. The app checks lists with the same rules
+/// (`DnsProviders.validate`); `testdata/dot-lists.txt` holds the cases both must agree on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DotListError {
+    TooLong,
+    Empty,
+    TooMany,
+    /// Not `tls://address[:port]#name`.
+    Format(usize),
+    /// Not an IPv4 or bracketed IPv6 literal (names are never resolved), or one that cannot be
+    /// a resolver: unspecified, broadcast or multicast.
+    Address(usize),
+    /// Not 1 to 65535 in plain decimal.
+    Port(usize),
+    /// Not a DNS name rustls can check the certificate against.
+    Name(usize),
+    /// The same address and port as an earlier entry.
+    Duplicate(usize),
+}
+
+/// Comma-separated `tls://address[:port]#name` entries (port 853 if left out), all valid or the
+/// whole list is refused. Empty entries and spaces or tabs around entries are ignored. Errors
+/// carry the position of the first bad entry, counting from 1.
+pub fn parse_dot_list(list: &str) -> Result<Vec<DotServer>, DotListError> {
+    if list.len() > MAX_DOT_LIST_LEN {
+        return Err(DotListError::TooLong);
     }
+    let entries: Vec<&str> = list.split(',').map(|e| e.trim_matches([' ', '\t'])).filter(|e| !e.is_empty()).collect();
+    if entries.is_empty() {
+        return Err(DotListError::Empty);
+    }
+    if entries.len() > MAX_DOT_SERVERS {
+        return Err(DotListError::TooMany);
+    }
+    let mut servers: Vec<DotServer> = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let server = DotServer::parse(entry, index + 1)?;
+        if servers.iter().any(|s| s.address == server.address) {
+            return Err(DotListError::Duplicate(index + 1));
+        }
+        servers.push(server);
+    }
+    Ok(servers)
+}
+
+impl DotServer {
+    /// `tls://address[:port]#name`; `position` only labels the error.
+    fn parse(entry: &str, position: usize) -> Result<DotServer, DotListError> {
+        let format = DotListError::Format(position);
+        let (address, name) = entry.strip_prefix(TLS_SCHEME).and_then(|rest| rest.split_once('#')).ok_or(format)?;
+        if address.is_empty() {
+            return Err(format);
+        }
+        let (ip, port) = split_host_port(address).ok_or(DotListError::Address(position))?;
+        let ip = ip.filter(usable_resolver).ok_or(DotListError::Address(position))?;
+        let port = port.map_or(Some(DOT_PORT), parse_port).ok_or(DotListError::Port(position))?;
+        if !valid_tls_name(name) {
+            return Err(DotListError::Name(position));
+        }
+        let name = ServerName::try_from(name.to_string()).map_err(|_| DotListError::Name(position))?;
+        Ok(DotServer { address: SocketAddr::new(ip, port), name })
+    }
+}
+
+/// `IPv4[:port]` or `[IPv6][:port]`: the literal (None if not one) and the port text, if any;
+/// anything after the brackets but `:port` is a bad (empty) port. `None` if a bracket is left open.
+fn split_host_port(address: &str) -> Option<(Option<IpAddr>, Option<&str>)> {
+    if let Some(bracketed) = address.strip_prefix('[') {
+        let (inside, after) = bracketed.split_once(']')?;
+        let ip = inside.parse::<Ipv6Addr>().ok().map(IpAddr::V6);
+        return match after {
+            "" => Some((ip, None)),
+            _ => Some((ip, Some(after.strip_prefix(':').unwrap_or("")))),
+        };
+    }
+    let (host, port) = match address.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (address, None),
+    };
+    Some((host.parse::<Ipv4Addr>().ok().map(IpAddr::V4), port))
+}
+
+fn usable_resolver(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => !(v4.is_unspecified() || v4.is_broadcast() || v4.is_multicast()),
+        IpAddr::V6(v6) => !(v6.is_unspecified() || v6.is_multicast()),
+    }
+}
+
+/// 1 to 65535, digits only, without leading zeros.
+fn parse_port(text: &str) -> Option<u16> {
+    let digits = text.len() <= 5 && !text.starts_with('0') && text.bytes().all(|b| b.is_ascii_digit());
+    text.parse::<u16>().ok().filter(|&port| digits && port != 0)
+}
+
+/// A host name: at most 253 characters without a trailing dot, labels of 1 to 63 letters,
+/// digits and inner hyphens, and a last label that is not all digits (it would read as an
+/// address). Stricter than rustls (no underscores, no trailing dot), so both sides agree.
+fn valid_tls_name(name: &str) -> bool {
+    let label_ok = |label: &str| {
+        (1..=63).contains(&label.len())
+            && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+    };
+    name.len() <= 253
+        && name.split('.').all(label_ok)
+        && name.rsplit('.').next().is_some_and(|last| !last.bytes().all(|b| b.is_ascii_digit()))
 }
 
 type Request = (Vec<u8>, oneshot::Sender<Vec<u8>>);
@@ -154,10 +262,10 @@ impl DotClient {
         DotClient { servers: servers.into(), connector: TlsConnector::from(Arc::new(config)), session: Mutex::new(None) }
     }
 
-    /// The same resolvers, also trusting `roots` (a private CA, for tests).
-    pub fn trusting(self, roots: Vec<CertificateDer<'static>>) -> DotClient {
-        let servers = self.servers.iter().map(|s| DotServer { address: s.address, name: s.name.clone() }).collect();
-        DotClient::new(servers, roots)
+    /// The resolvers, in order of preference.
+    #[cfg(test)]
+    pub(crate) fn addresses(&self) -> Vec<SocketAddr> {
+        self.servers.iter().map(|s| s.address).collect()
     }
 
     async fn exchange(&self, query: &[u8]) -> Option<Vec<u8>> {
@@ -311,17 +419,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_plain_and_tls_lists() {
+    fn plain_lists_are_for_the_bench_and_tls_lists_never_fall_back_to_them() {
         let Upstream::Plain(plain) = Upstream::parse("192.168.1.1, [2001:db8::2]:5353,garbage") else { panic!() };
         assert_eq!(plain, vec!["192.168.1.1:53".parse().unwrap(), "[2001:db8::2]:5353".parse().unwrap()]);
         let Upstream::Tls(client) =
-            Upstream::parse("tls://1.1.1.1#cloudflare-dns.com, tls://[2606:4700:4700::1111]:853#cloudflare-dns.com, tls://bad, 9.9.9.9")
+            Upstream::parse("tls://1.1.1.1#cloudflare-dns.com, tls://[2606:4700:4700::1111]:853#cloudflare-dns.com")
         else {
             panic!()
         };
         let addresses: Vec<String> = client.servers.iter().map(|s| s.address.to_string()).collect();
         assert_eq!(addresses, ["1.1.1.1:853", "[2606:4700:4700::1111]:853"]);
+        // One bad entry refuses the whole list: no resolver, and the plain one is not used.
+        assert!(matches!(Upstream::parse("tls://1.1.1.1#cloudflare-dns.com, tls://bad, 9.9.9.9"), Upstream::Plain(p) if p.is_empty()));
         assert!(matches!(Upstream::parse(""), Upstream::Plain(p) if p.is_empty()));
+    }
+
+    /// The cases the app's validation is tested against too (`DnsProvidersTest`).
+    #[test]
+    fn dot_lists_agree_with_the_app() {
+        let cases = include_str!("../../../testdata/dot-lists.txt");
+        let mut checked = 0;
+        for line in cases.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
+            let (expected, list) = line.split_once(' ').unwrap_or((line, ""));
+            let got = match parse_dot_list(list) {
+                Ok(servers) => servers.len().to_string(),
+                Err(error) => reason(error).to_string(),
+            };
+            assert_eq!(got, expected, "{list:?}");
+            checked += 1;
+        }
+        assert!(checked > 50, "{checked} cases");
+    }
+
+    fn reason(error: DotListError) -> &'static str {
+        match error {
+            DotListError::TooLong => "TOO_LONG",
+            DotListError::Empty => "EMPTY",
+            DotListError::TooMany => "TOO_MANY",
+            DotListError::Format(_) => "FORMAT",
+            DotListError::Address(_) => "ADDRESS",
+            DotListError::Port(_) => "PORT",
+            DotListError::Name(_) => "NAME",
+            DotListError::Duplicate(_) => "DUPLICATE",
+        }
+    }
+
+    #[test]
+    fn errors_point_at_the_first_bad_entry_and_defaults_apply() {
+        assert_eq!(parse_dot_list("tls://1.1.1.1#a.b, ,tls://1.0.0.1:0#a.b,tls://x").err(), Some(DotListError::Port(2)));
+        assert_eq!(parse_dot_list("tls://1.1.1.1#a.b,tls://1.1.1.1#c.d").err(), Some(DotListError::Duplicate(2)));
+        let servers = parse_dot_list("tls://[2620:fe::fe]#dns.quad9.net").unwrap();
+        assert_eq!(servers[0].address, "[2620:fe::fe]:853".parse().unwrap());
+        assert_eq!(servers[0].name, ServerName::try_from("dns.quad9.net").unwrap());
     }
 
     #[test]

@@ -117,12 +117,20 @@ fn main() {
     let intercepted = intercepted.split(',').filter_map(|s| s.parse().ok()).collect();
     let tunnel_fd = open_tun(tun);
     let tunnel = Arc::new(Tunnel::new(tunnel_fd, load(list), intercepted));
-    let resolvers = |list: &str| match (Upstream::parse(list), std::env::var("NFDNS_DOT_CA")) {
-        // The e2e test's DNS-over-TLS server has a certificate from its own CA (DER file).
-        (Upstream::Tls(client), Ok(ca)) => Upstream::Tls(client.trusting(vec![std::fs::read(ca).expect("CA file").into()])),
-        (upstream, _) => upstream,
+    // DNS-over-TLS lists go through the app's path (refused whole, the previous one stays); the
+    // e2e test's server has a certificate from its own CA (DER file). Others are plain (bench).
+    let use_upstream = |tunnel: &Tunnel, list: &str| {
+        if !list.starts_with("tls://") {
+            tunnel.set_upstream_to(Upstream::parse(list));
+            return println!("upstream {list}");
+        }
+        let roots = std::env::var("NFDNS_DOT_CA").map(|ca| vec![std::fs::read(ca).expect("CA file").into()]).unwrap_or_default();
+        match tunnel.set_dot_upstream(list, roots) {
+            Ok(()) => println!("upstream {list}"),
+            Err(error) => println!("upstream refused {error:?}: {list}"),
+        }
     };
-    tunnel.set_upstream_to(resolvers(upstream));
+    use_upstream(&tunnel, upstream);
     if let Ok(netns) = std::env::var("NFDNS_APPS_NETNS") {
         tunnel.set_owner_lookup(ProcLookup { netns, joined: false }).expect("lookup thread");
         let uid = |name: &str| std::env::var(name).ok().map(|uid| uid.parse::<u32>().expect("uid"));
@@ -164,8 +172,7 @@ fn main() {
             if now != seen_upstream {
                 seen_upstream = now;
                 let text = std::fs::read_to_string(&upstream_file).unwrap_or_default();
-                reporter.set_upstream_to(resolvers(text.trim()));
-                println!("upstream {}", text.trim());
+                use_upstream(&reporter, text.trim());
             }
         }
     });

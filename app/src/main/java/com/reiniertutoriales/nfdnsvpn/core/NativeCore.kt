@@ -31,8 +31,11 @@ object NativeCore {
     @JvmStatic external fun nativeTunnelCreate(filter: Long, fd: Int, intercepted: String): Long
     /** Takes ownership of [filter] and puts it in use at once (list update, allowlist change). */
     @JvmStatic external fun nativeTunnelSetFilter(tunnel: Long, filter: Long)
-    /** Comma-separated resolvers: `IP[:port]` plain, or `tls://IP[:port]#name` over TLS. */
-    @JvmStatic external fun nativeTunnelSetUpstream(tunnel: Long, servers: String)
+    /**
+     * Comma-separated `tls://address[:port]#name` resolvers, all valid (see `DnsProviders.validate`)
+     * or refused whole: then the ones in use stay and it returns false.
+     */
+    @JvmStatic external fun nativeTunnelSetUpstream(tunnel: Long, servers: String): Boolean
     /** Apps (uids) cut off the network entirely; asks [ConnectionOwner] who owns each new flow. */
     @JvmStatic external fun nativeTunnelSetBlockedApps(tunnel: Long, uids: IntArray)
     /** Watched apps (uids): only readable, allowed names or addresses our DNS gave out. */
@@ -118,9 +121,9 @@ class NativeTunnel(filter: Long, fd: Int, intercepted: List<String>) : Closeable
         if (handle != 0L) NativeCore.nativeTunnelSetFd(handle, fd)
     }
 
-    @Synchronized fun setUpstream(servers: List<String>) {
-        if (handle != 0L) NativeCore.nativeTunnelSetUpstream(handle, servers.joinToString(","))
-    }
+    /** False if the core refused the list; the resolvers in use stay. */
+    @Synchronized fun setUpstream(servers: List<String>): Boolean =
+        handle != 0L && NativeCore.nativeTunnelSetUpstream(handle, servers.joinToString(","))
 
     @Synchronized fun setBlockedApps(uids: IntArray) {
         if (handle != 0L) NativeCore.nativeTunnelSetBlockedApps(handle, uids)

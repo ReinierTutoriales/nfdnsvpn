@@ -84,7 +84,7 @@ class SettingsActivity : ComponentActivity() {
 
         section(R.string.settings_dns)
         note(R.string.settings_dns_note)
-        val chosen = ShieldSettings.dnsProvider(this)
+        val chosen = ShieldSettings.dnsProviderInUse(this)
         val choices = DnsProviders.ALL.map { it.id to it.name } +
             (DnsProviders.CUSTOM to getString(R.string.dns_custom, ShieldSettings.customDns(this).ifEmpty { "…" }))
         for ((id, name) in choices) {
@@ -220,15 +220,28 @@ class SettingsActivity : ComponentActivity() {
         }
         AlertDialog.Builder(this)
             .setTitle(R.string.dns_custom_title)
-            .setMessage(R.string.dns_custom_hint)
+            .setMessage(getString(R.string.dns_custom_hint, DnsProviders.MAX_SERVERS))
             .setView(input)
             .setPositiveButton(android.R.string.ok) { _, _ ->
-                val text = input.text.toString().trim()
-                if (DnsProviders.parseCustom(text) != null) chooseDns(DnsProviders.CUSTOM, text)
-                else Toast.makeText(this, R.string.dns_custom_invalid, Toast.LENGTH_LONG).show()
+                // Saved only when valid, as shown; otherwise the settings in use stay.
+                when (val result = DnsProviders.validate(input.text.toString())) {
+                    is DnsProviders.Validation.Valid -> chooseDns(DnsProviders.CUSTOM, result.servers.joinToString(", "))
+                    is DnsProviders.Validation.Invalid -> Toast.makeText(this, invalidDns(result), Toast.LENGTH_LONG).show()
+                }
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
+    }
+
+    private fun invalidDns(result: DnsProviders.Validation.Invalid): String = when (result.reason) {
+        DnsProviders.Reason.TOO_LONG -> getString(R.string.dns_invalid_too_long, DnsProviders.MAX_LENGTH)
+        DnsProviders.Reason.EMPTY -> getString(R.string.dns_invalid_empty)
+        DnsProviders.Reason.TOO_MANY -> getString(R.string.dns_invalid_too_many, DnsProviders.MAX_SERVERS)
+        DnsProviders.Reason.FORMAT -> getString(R.string.dns_invalid_format, result.entry)
+        DnsProviders.Reason.ADDRESS -> getString(R.string.dns_invalid_address, result.entry)
+        DnsProviders.Reason.PORT -> getString(R.string.dns_invalid_port, result.entry)
+        DnsProviders.Reason.NAME -> getString(R.string.dns_invalid_name, result.entry)
+        DnsProviders.Reason.DUPLICATE -> getString(R.string.dns_invalid_duplicate, result.entry)
     }
 
     /** Allowlists one of the recently blocked names, picked with the remote (no typing on a TV). */

@@ -290,7 +290,8 @@ class ShieldVpnService : VpnService() {
 
     /** The chosen resolvers, over TLS. The network's own are never used. */
     private fun applyDns(target: NativeTunnel) {
-        target.setUpstream(ShieldSettings.chosenDns(this))
+        // Only validated lists get here; a refusal means the app and the core disagree.
+        if (!target.setUpstream(ShieldSettings.chosenDns(this))) Log.e(TAG, "DNS list refused by the core; the previous one stays")
     }
 
     /**

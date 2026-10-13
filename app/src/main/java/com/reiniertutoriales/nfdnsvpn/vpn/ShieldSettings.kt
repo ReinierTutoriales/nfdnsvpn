@@ -92,8 +92,11 @@ object ShieldSettings {
         if (blocked) setDomainAllowed(context, domain, false)
     }
 
-    /** Resolver for every allowed query (see [DnsProviders]). */
+    /** Resolver for every allowed query (see [DnsProviders]), as saved. */
     fun dnsProvider(context: Context): String = prefs(context).getString(DNS_PROVIDER, DnsProviders.DEFAULT)!!
+
+    /** The choice in use, the one to show as chosen (see [DnsProviders.effective]). */
+    fun dnsProviderInUse(context: Context): String = DnsProviders.effective(dnsProvider(context), customDns(context))
 
     fun customDns(context: Context): String = prefs(context).getString(CUSTOM_DNS, "")!!
 

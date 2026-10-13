@@ -334,6 +334,18 @@ Para esas apps queda el último recurso: **cortarles internet por completo** (ab
   sistema). Por defecto Quad9 + Cloudflare: dos empresas independientes, se alterna si una falla.
   Opciones: Cloudflare, Cloudflare con bloqueo de malware, Quad9, AdGuard, Mullvad, Google o uno
   propio (`tls://IP#nombre`, también obligatoriamente cifrado).
+- **DNS propio, validado entero:** `tls://dirección[:puerto]#nombre` separados por comas; la
+  dirección es una IPv4 o una IPv6 entre corchetes (nunca un nombre: no se resuelve nada por la
+  red para validar), utilizable como resolvedor (ni sin especificar, ni difusión, ni multicast);
+  el puerto de 1 a 65535 (853 si se omite) y el nombre el del certificado. Máximo 8 servidores
+  (escalonados 250 ms, el octavo empieza a 1,75 s, justo antes de dar por muerta la conexión a
+  1,8 s) y 1024 bytes. Una entrada mala rechaza la lista entera y se conserva la elección
+  anterior; se guarda y se muestra la lista tal como se usa. La app y el núcleo aplican las
+  mismas reglas, comprobadas con los mismos casos (`testdata/dot-lists.txt`); el núcleo además
+  rechaza entera cualquier lista que no las cumpla y sigue con los resolvedores en uso. Una lista
+  guardada con reglas anteriores que ya no valga se muestra y se usa como la predeterminada. Que
+  la sintaxis sea válida no garantiza que el proveedor conteste: si no lo hace, la consulta queda
+  sin respuesta, nunca en claro.
 - **Nunca** se usa el DNS del router ni de la operadora, ni hay vuelta al DNS en claro: si el
   cifrado falla, la consulta queda sin respuesta y la pantalla lo avisa.
 - **Eficiencia:** una sola conexión TLS 1.3 para todas las consultas (en paralelo, RFC 7766),

@@ -12,10 +12,11 @@ use crate::filter::Filter;
 use crate::quic::{self, InitialReader, QuicPeek};
 use crate::route::{Verdict, classify, wrap_reply};
 use crate::sni::{self, Peek};
-use crate::upstream::Upstream;
+use crate::upstream::{DotClient, DotListError, Upstream, parse_dot_list};
 use futures::{SinkExt, StreamExt};
 use netstack_smoltcp::StackBuilder;
 use netstack_smoltcp::udp::UdpMsg;
+use rustls::pki_types::CertificateDer;
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -260,6 +261,14 @@ impl Tunnel {
     /// Plain resolvers or a chosen resolver over TLS; queries in flight finish on the old one.
     pub fn set_upstream_to(&self, upstream: Upstream) {
         *self.upstream.lock().unwrap() = Arc::new(upstream);
+    }
+
+    /// A DNS-over-TLS list (see [`parse_dot_list`]), all of it or nothing: a refused list keeps
+    /// the resolvers in use. `extra_roots` are trusted besides Mozilla's (tests use a private CA).
+    pub fn set_dot_upstream(&self, list: &str, extra_roots: Vec<CertificateDer<'static>>) -> Result<(), DotListError> {
+        let servers = parse_dot_list(list)?;
+        self.set_upstream_to(Upstream::Tls(DotClient::new(servers, extra_roots)));
+        Ok(())
     }
 
     /// Apps (Linux uids) cut off the network entirely: their new TCP connections and UDP flows
@@ -882,6 +891,26 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    fn dot_addresses(tunnel: &Tunnel) -> Vec<String> {
+        match &**tunnel.upstream.lock().unwrap() {
+            Upstream::Tls(client) => client.addresses().iter().map(SocketAddr::to_string).collect(),
+            Upstream::Plain(servers) => servers.iter().map(|s| format!("plain {s}")).collect(),
+        }
+    }
+
+    #[test]
+    fn a_refused_dot_list_keeps_the_resolvers_in_use() {
+        let (tun, _peer) = fake_tun();
+        let tunnel = Tunnel::new(tun.as_raw_fd(), FilterBuilder::default().build(), Vec::new());
+        tunnel.set_dot_upstream("tls://9.9.9.9#dns.quad9.net", Vec::new()).unwrap();
+        for refused in ["tls://1.1.1.1:0#a.b", "tls://1.1.1.1#a.b, 1.1.1.1", "", "tls://1.1.1.1#a.b,tls://1.1.1.1#a.b"] {
+            assert!(tunnel.set_dot_upstream(refused, Vec::new()).is_err(), "{refused:?}");
+            assert_eq!(dot_addresses(&tunnel), ["9.9.9.9:853"], "{refused:?}");
+        }
+        tunnel.set_dot_upstream("tls://[2620:fe::fe]:853#dns.quad9.net", Vec::new()).unwrap();
+        assert_eq!(dot_addresses(&tunnel), ["[2620:fe::fe]:853"]);
     }
 
     fn start(tun: &OwnedFd) -> Arc<Tunnel> {

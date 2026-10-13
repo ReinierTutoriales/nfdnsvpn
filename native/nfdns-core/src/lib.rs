@@ -183,19 +183,19 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
         .resolve::<ThrowRuntimeExAndDefault>()
 }
 
+/// Puts a DNS-over-TLS list in use, all of it or nothing: a refused list (the app validates it
+/// first, with the same rules) keeps the resolvers in use and returns false. Never plain DNS.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelSetUpstream<'caller>(
     mut unowned: EnvUnowned<'caller>,
     _class: JClass<'caller>,
     handle: jlong,
     servers: JString<'caller>,
-) {
+) -> jboolean {
     unowned
-        .with_env(|env| -> jni::errors::Result<()> {
-            if let Some(t) = tunnel(handle) {
-                t.set_upstream_to(upstream::Upstream::parse(&servers.try_to_string(env)?));
-            }
-            Ok(())
+        .with_env(|env| -> jni::errors::Result<jboolean> {
+            let Some(t) = tunnel(handle) else { return Ok(false) };
+            Ok(t.set_dot_upstream(&servers.try_to_string(env)?, Vec::new()).is_ok())
         })
         .resolve::<ThrowRuntimeExAndDefault>()
 }

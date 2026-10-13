@@ -447,6 +447,16 @@ use_upstream "tls://192.0.2.1#dns.e2e"
 check "DNS por TLS al resolvedor elegido" "192.0.2.53" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 example.org)"
 check "DNS por TLS: el DNS forzado de la app también va cifrado" "192.0.2.53" "$(app "$PY" "$WORK/client.py" dns 203.0.113.53 example.net)"
 check "DNS por TLS: bloqueados se siguen contestando en local" "0.0.0.0" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 pubads.g.doubleclick.net)"
+# A refused list (port 0, then a plain entry among encrypted ones) is not applied in part: the
+# encrypted resolver in use keeps answering and the plain one gets nothing.
+plain_before=$(cat "$WORK/plain-dns.count" 2>/dev/null || echo 0)
+for case in "Port(1)|tls://192.0.2.1:0#dns.e2e" "Format(2)|tls://192.0.2.1:8853#dns.e2e, 192.0.2.1"; do
+    reason=${case%%|*} refused=${case#*|}
+    use_upstream "$refused"
+    check "Lista DNS rechazada entera: $refused" "1" "$(grep -cxF "upstream refused $reason: $refused" "$WORK/tunnel.log")"
+    check "Lista DNS rechazada: sigue el resolvedor cifrado anterior" "192.0.2.53" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 "kept-${reason%%(*}.example")"
+done
+check "Lista DNS rechazada: el DNS en claro no recibió nada" "$plain_before" "$(cat "$WORK/plain-dns.count" 2>/dev/null || echo 0)"
 # The connection goes silent with a query behind the stuck one: it is dropped and that query is
 # answered over a new connection, instead of waiting for TCP to give up minutes later.
 app "$PY" "$WORK/client.py" dns 10.111.0.1 hang.e2e >/dev/null 2>&1 &

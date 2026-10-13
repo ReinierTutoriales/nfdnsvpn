@@ -112,6 +112,9 @@ android {
         buildConfig = true
     }
 
+    // Cases the app's and the core's checks must agree on (DnsProvidersTest, upstream::tests).
+    sourceSets.getByName("test").resources.directories += rootProject.file("testdata").path
+
     lint {
         abortOnError = true
         warningsAsErrors = true
