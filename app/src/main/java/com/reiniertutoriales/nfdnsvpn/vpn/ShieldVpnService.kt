@@ -232,8 +232,8 @@ class ShieldVpnService : VpnService() {
                 port,
                 establish = { establish(fullTunnel, network.snapshot)?.let(::PfdInterface) },
                 onHealth = { health, reason ->
+                    ShieldState.degradedReason = reason
                     ShieldState.phase = if (health == InterfaceLoop.Health.PROTECTED) ShieldState.Phase.RUNNING else ShieldState.Phase.DEGRADED
-                    ShieldState.error = reason
                     Log.i(TAG, "Interface health $health ${reason.orEmpty()}")
                 },
                 schedule = { delayMs, retry -> scheduler.schedule(retry, delayMs, TimeUnit.MILLISECONDS) },
@@ -242,7 +242,7 @@ class ShieldVpnService : VpnService() {
             // A change between the snapshot used above and the loop existing.
             if (network.snapshot != built) loop.networkChanged()
             if (stopping) return
-            ShieldState.phase = ShieldState.Phase.RUNNING
+            // The loop reports health itself: protected only if no change is pending.
             val outcome = loop.run(PfdInterface(tun))
             tun = null // the loop closed every interface it held
             when (outcome.end) {
@@ -257,6 +257,7 @@ class ShieldVpnService : VpnService() {
             }
         } finally {
             interfaceLoop = null
+            ShieldState.degradedReason = null
             maintenance = null
             ShieldState.tunnel = null
             jobs?.shutdownNow()

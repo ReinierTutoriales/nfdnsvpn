@@ -362,7 +362,10 @@ Para esas apps queda el último recurso: **cortarles internet por completo** (ab
   - **Reconstrucción fallida** (`InterfaceLoop`): se conserva la interfaz anterior (Android la
     mantiene si no puede crear la nueva; cerrarla podría sacar tráfico del filtro), el estado pasa a
     «Protección incompleta» (sus rutas pueden estar desactualizadas, no se anuncia protección) y se
-    reintenta 5 veces (1, 2, 4, 8 y 16 s); un cambio de red posterior también reintenta. Sin
+    reintenta 5 veces (1, 2, 4, 8 y 16 s); un cambio de red posterior también reintenta. Un
+    reintento que ya no toca (protección recuperada, otro más reciente, ciclo terminado) no hace
+    nada: no corta conexiones. «Protegiendo» solo se anuncia si la interfaz en uso se creó tras el
+    último cambio avisado (también al arrancar); un cambio pone «Protección incompleta» al momento. Sin
     permiso de VPN (revocado) el servicio termina; una parada durante la sustitución cierra la
     interfaz nueva sin usarla. Cada reconstrucción usa la red del momento en que se establece; un
     cambio durante ella provoca otra, así que el último cambio siempre acaba aplicado (puede

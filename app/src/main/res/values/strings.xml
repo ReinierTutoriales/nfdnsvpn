@@ -9,7 +9,7 @@
     <string name="status_starting">Activando…</string>
     <string name="status_running">Protegiendo todas las apps</string>
     <string name="status_degraded">Protección incompleta</string>
-    <string name="warning_degraded">La red cambió y no se pudieron actualizar las rutas: parte del tráfico podría no pasar por el filtro. Reintentando; si sigue así, desactiva y activa la protección.</string>
+    <string name="warning_degraded">Parte del tráfico podría no pasar por el filtro hasta que se actualicen las rutas (%1$s). Si dura, desactiva y activa la protección.</string>
     <string name="blocked_count">%1$s bloqueados</string>
     <string name="action_options">Opciones</string>
     <string name="error_prefix">Error: %1$s</string>

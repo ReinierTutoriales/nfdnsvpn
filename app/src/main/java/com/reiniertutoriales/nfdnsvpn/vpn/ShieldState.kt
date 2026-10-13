@@ -15,6 +15,8 @@ object ShieldState {
     @Volatile var phase = Phase.STOPPED
     @Volatile var fullTunnel = false
     @Volatile var error: String? = null
+    /** Why protection is incomplete while [phase] is [Phase.DEGRADED]. */
+    @Volatile var degradedReason: String? = null
     @Volatile var rules = 0
     @Volatile var lists: List<ListStatus> = emptyList()
     @Volatile var privateDnsStrict: String? = null

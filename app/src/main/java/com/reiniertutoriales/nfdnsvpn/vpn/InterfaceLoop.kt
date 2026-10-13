@@ -22,11 +22,14 @@ interface VpnInterface : Closeable {
  * - [networkChanged]: the running tunnel returns and the interface is rebuilt. Each rebuild reads
  *   the network as it is when it establishes; a change during that establish triggers one more.
  *   Intermediate states can be established briefly; the last change always ends up applied.
+ * - Health is [Health.PROTECTED] only while the interface in use was built for the latest change
+ *   reported: a change sets [Health.DEGRADED] at once, until an interface built after it is in use.
  * - The new interface exists before the old one is closed, and only one tunnel run is active.
  * - A rebuild that fails (establish throws, e.g. a route refused) keeps the old interface: Android
  *   keeps it when it cannot create the new one, and closing it could send traffic around the
  *   filter. Its routes may be stale, so health is [Health.DEGRADED] (never "protected") while a
- *   limited number of retries with growing delays runs; a later network change retries too.
+ *   limited number of retries with growing delays runs; a later network change retries too. A
+ *   retry no longer due (protection restored, a newer retry, the loop ended) does nothing.
  * - establish giving no interface means the VPN consent was revoked: the loop ends.
  * - [stop] ends the loop; an interface established meanwhile is closed, not used.
  */
@@ -46,6 +49,9 @@ class InterfaceLoop(
     data class Outcome(val end: End, val message: String? = null)
 
     companion object {
+        /** Why health is degraded while the interface for a new network is being built. */
+        const val PENDING = "la red cambió; actualizando rutas"
+
         /** Automatic retries after a failed rebuild: 1, 2, 4, 8 and 16 s, then only on change. */
         const val MAX_RETRIES = 5
         fun retryDelayMs(attempt: Int) = 1000L shl (attempt - 1)
@@ -53,11 +59,23 @@ class InterfaceLoop(
 
     private val rebuild = AtomicBoolean(false)
     @Volatile private var stopping = false
-    private var failedRebuilds = 0
 
-    /** From any thread: the network changed. */
+    /** Health, retries and the pending flag change together under this lock, never out of order. */
+    private val lock = Any()
+    private var failedRebuilds = 0
+    /**
+     * Only the retry holding the current token may fire. It changes when a rebuild succeeds,
+     * when another retry is scheduled and when the loop ends, so a retry left from an older
+     * failure never cuts connections after protection was restored.
+     */
+    private var retryToken = 0L
+
+    /** From any thread: the network changed. Not protected until an interface for it is in use. */
     fun networkChanged() {
-        rebuild.set(true)
+        synchronized(lock) {
+            rebuild.set(true)
+            onHealth(Health.DEGRADED, PENDING)
+        }
         tunnel.stop()
     }
 
@@ -71,6 +89,10 @@ class InterfaceLoop(
     fun run(initial: VpnInterface): Outcome {
         var current = initial
         try {
+            // Protected only if no change came in since [initial] was established (start included).
+            synchronized(lock) {
+                if (!rebuild.get()) onHealth(Health.PROTECTED, null)
+            }
             // A change reported before this run started (its stop() had nothing to stop yet).
             if (rebuild.get()) tunnel.stop()
             while (true) {
@@ -92,19 +114,34 @@ class InterfaceLoop(
                 tunnel.setFd(next.fd)
                 current.close()
                 current = next
-                failedRebuilds = 0
-                onHealth(Health.PROTECTED, null)
+                synchronized(lock) {
+                    failedRebuilds = 0
+                    retryToken++
+                    // Another change came in during establish: its routes are still to be applied.
+                    if (!rebuild.get()) onHealth(Health.PROTECTED, null)
+                }
             }
         } finally {
+            synchronized(lock) { retryToken++ }
             current.close()
         }
     }
 
     private fun rebuildFailed(error: Exception) {
-        failedRebuilds++
-        onHealth(Health.DEGRADED, error.message ?: error.javaClass.simpleName)
-        if (failedRebuilds <= MAX_RETRIES) {
-            schedule(retryDelayMs(failedRebuilds)) { if (!stopping) networkChanged() }
+        synchronized(lock) {
+            failedRebuilds++
+            onHealth(Health.DEGRADED, error.message ?: error.javaClass.simpleName)
+            if (failedRebuilds <= MAX_RETRIES) {
+                val token = ++retryToken
+                schedule(retryDelayMs(failedRebuilds)) { retry(token) }
+            }
         }
+    }
+
+    private fun retry(token: Long) {
+        synchronized(lock) {
+            if (stopping || token != retryToken) return
+        }
+        networkChanged()
     }
 }
