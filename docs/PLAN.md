@@ -409,6 +409,9 @@ de funcionar: en **Opciones › Apps sin internet** se marca la app.
 - Sin coste cuando no hay ninguna app marcada: el túnel no pregunta nada. Con alguna marcada,
   cuesta una llamada al sistema por conexión nueva, en un hilo aparte; las conexiones ya
   abiertas no se tocan.
+- Diagnóstico: Opciones › Estado y las estadísticas del núcleo cuentan aparte los dueños no
+  encontrados por motivo (sin coincidencia, sin respuesta a tiempo, cola llena) y las conexiones
+  descartadas por ello, que ya no se suman a «bloqueados».
 - Si no se sabe el dueño (consulta lenta o saturada, conexión ya cerrada), la conexión se
   **descarta**: así una app bloqueada no puede colarse saturando la consulta con conexiones. La
   cola admite 256 consultas; más conexiones nuevas a la vez se rechazan, no se encolan. Solo

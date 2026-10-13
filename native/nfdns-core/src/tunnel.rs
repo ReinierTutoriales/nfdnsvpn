@@ -6,7 +6,7 @@
 //! relayed through an ordinary socket. Those sockets do not loop back into the tunnel because the
 //! app excludes itself from the VPN (`addDisallowedApplication`).
 
-use crate::apps::{AppGate, AppRule, OwnerLookup, Protocol};
+use crate::apps::{AppGate, AppRule, OwnerLookup, Protocol, Unknown};
 use crate::dns;
 use crate::filter::Filter;
 use crate::quic::{self, InitialReader, QuicPeek};
@@ -90,10 +90,39 @@ pub struct Stats {
     pub dns_failed: AtomicU64,
     /// New connections or flows refused because the limit was reached.
     pub flows_refused: AtomicU64,
+    /// While app rules are active: owners not found, by reason (the DNS path included).
+    pub owner_no_match: AtomicU64,
+    pub owner_timeout: AtomicU64,
+    pub owner_queue_full: AtomicU64,
+    /// TCP connections and UDP flows dropped because their owner was not found (fail closed).
+    /// Not counted as blocked: nothing on any list matched them.
+    pub owner_drops: AtomicU64,
     recent: Mutex<VecDeque<String>>,
 }
 
 impl Stats {
+    fn note_unknown(&self, why: Unknown) {
+        let counter = match why {
+            Unknown::NoOwner => &self.owner_no_match,
+            Unknown::Timeout => &self.owner_timeout,
+            Unknown::QueueFull => &self.owner_queue_full,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Counts a flow dropped by its app rule: blocked app, or owner not found.
+    fn note_dropped(&self, rule: AppRule) {
+        match rule {
+            AppRule::Unknown(why) => {
+                self.note_unknown(why);
+                self.owner_drops.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {
+                self.blocked.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
     /// A DNS query answered as blocked.
     fn record_blocked(&self, name: String) {
         self.queries.fetch_add(1, Ordering::Relaxed);
@@ -108,10 +137,11 @@ impl Stats {
         recent.truncate(RECENT_LIMIT);
     }
 
-    /// `queries,blocked,tcp,udp,quic_refused,dns_failed,flows_refused` then one recently blocked name per line, newest first.
+    /// `queries,blocked,tcp,udp,quic_refused,dns_failed,flows_refused,owner_no_match,owner_timeout,
+    /// owner_queue_full,owner_drops` then one recently blocked name per line, newest first.
     pub fn encode(&self) -> String {
         let mut out = format!(
-            "{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{}",
             self.queries.load(Ordering::Relaxed),
             self.blocked.load(Ordering::Relaxed),
             self.tcp_active.load(Ordering::Relaxed),
@@ -119,6 +149,10 @@ impl Stats {
             self.quic_refused.load(Ordering::Relaxed),
             self.dns_failed.load(Ordering::Relaxed),
             self.flows_refused.load(Ordering::Relaxed),
+            self.owner_no_match.load(Ordering::Relaxed),
+            self.owner_timeout.load(Ordering::Relaxed),
+            self.owner_queue_full.load(Ordering::Relaxed),
+            self.owner_drops.load(Ordering::Relaxed),
         );
         for name in self.recent.lock().unwrap().iter() {
             out.push('\n');
@@ -348,6 +382,7 @@ impl Tunnel {
                                     return;
                                 }
                                 AppRule::Watched(uid) if !name.is_empty() => apps.record(uid, &name, false),
+                                AppRule::Unknown(why) => stats.note_unknown(why),
                                 // Unknown is not refused here: the system resolver asks for every
                                 // app, and the answer goes through the filter anyway.
                                 _ => {}
@@ -476,9 +511,9 @@ async fn relay_tcp(mut listener: netstack_smoltcp::TcpListener, filter: SharedFi
             let _active = Active::new(&stats.tcp_active);
             let rule = apps.rule(Protocol::Tcp, local, remote).await;
             // Before connecting: a blocked app's server never even sees a SYN. An owner that could
-            // not be found counts as blocked (see `apps`).
-            if matches!(rule, AppRule::Blocked | AppRule::Unknown) {
-                stats.blocked.fetch_add(1, Ordering::Relaxed);
+            // not be found is dropped too (fail closed, see `apps`).
+            if matches!(rule, AppRule::Blocked | AppRule::Unknown(_)) {
+                stats.note_dropped(rule);
                 return;
             }
             // A watched app's unknown address is only reached once the app shows an allowed name.
@@ -719,8 +754,8 @@ async fn udp_flow(local: SocketAddr, remote: SocketAddr, mut from_app: mpsc::Rec
     let Some(first) = from_app.recv().await else { return };
     let apps = &context.apps;
     let rule = apps.rule(Protocol::Udp, local, remote).await;
-    if matches!(rule, AppRule::Blocked | AppRule::Unknown) {
-        stats.blocked.fetch_add(1, Ordering::Relaxed);
+    if matches!(rule, AppRule::Blocked | AppRule::Unknown(_)) {
+        stats.note_dropped(rule);
         swallow(&mut from_app).await;
         return;
     }
@@ -1084,6 +1119,42 @@ mod tests {
         send(&new_app, &udp_packet(client, ip("127.0.0.1"), 41002, echo_port, b"other app"));
         let echoed = try_receive(&new_app, 2000).expect("other app answered");
         assert_eq!(packet::parse(&echoed).unwrap().payload, b"other app");
+        tunnel.stop();
+    }
+
+    /// Owner of local port 41002 only; every other flow has no owner.
+    struct OnlyPort(u16);
+
+    impl OwnerLookup for OnlyPort {
+        fn owner(&mut self, _: Protocol, local: SocketAddr, _: SocketAddr) -> Option<u32> {
+            (local.port() == self.0).then_some(10200)
+        }
+    }
+
+    #[test]
+    fn an_owner_not_found_is_dropped_and_counted_apart_from_blocks() {
+        let (app, tun) = fake_tun();
+        let tunnel = start(&tun);
+        tunnel.set_owner_lookup(OnlyPort(41002)).unwrap();
+        tunnel.set_blocked_apps([10123]);
+        let echo = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let echo_port = echo.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let mut buffer = [0u8; 512];
+            while let Ok((n, from)) = echo.recv_from(&mut buffer) {
+                echo.send_to(&buffer[..n], from).unwrap();
+            }
+        });
+        let client = ip("10.111.0.2");
+        // A known owner first (the lookup works), then a flow nobody owns: dropped, fail closed.
+        send(&app, &udp_packet(client, ip("127.0.0.1"), 41002, echo_port, b"known"));
+        assert_eq!(packet::parse(&receive(&app)).unwrap().payload, b"known");
+        send(&app, &udp_packet(client, ip("127.0.0.1"), 41003, echo_port, b"no owner"));
+        assert!(try_receive(&app, 500).is_none(), "an unknown owner must not get through");
+        let stats = tunnel.stats();
+        let counts = [&stats.blocked, &stats.owner_no_match, &stats.owner_timeout, &stats.owner_queue_full, &stats.owner_drops]
+            .map(|c| c.load(Ordering::Relaxed));
+        assert_eq!(counts, [0, 1, 0, 0, 1], "blocked, no match, timeout, queue full, drops");
         tunnel.stop();
     }
 

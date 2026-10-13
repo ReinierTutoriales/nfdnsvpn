@@ -54,7 +54,18 @@ pub enum AppRule {
     Watched(u32),
     /// Rules are active but the owner could not be found: treated as blocked, except for DNS,
     /// which the system resolver sends on behalf of every app and is filtered anyway.
-    Unknown,
+    Unknown(Unknown),
+}
+
+/// Why an owner could not be found (counted separately, to tell them apart when flows drop).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unknown {
+    /// The lookup answered: no socket matched.
+    NoOwner,
+    /// No answer within [`LOOKUP_TIMEOUT`].
+    Timeout,
+    /// More new flows at once than the lookup queue holds.
+    QueueFull,
 }
 
 /// Finds the Linux uid of the app that owns a connection; `None` if unknown.
@@ -134,17 +145,21 @@ impl AppGate {
         let Some(lookups) = self.lookups.lock().unwrap().clone() else { return AppRule::Normal };
         let (reply, answer) = oneshot::channel();
         let owner = match lookups.try_send((protocol, local, remote, reply)) {
-            Ok(()) => timeout(LOOKUP_TIMEOUT, answer).await.ok().and_then(Result::ok).flatten(),
+            Ok(()) => match timeout(LOOKUP_TIMEOUT, answer).await {
+                Ok(Ok(Some(uid))) => Ok(uid),
+                Ok(_) => Err(Unknown::NoOwner),
+                Err(_) => Err(Unknown::Timeout),
+            },
             // Full: more new flows at once than lookups can keep up with.
-            Err(_) => None,
+            Err(_) => Err(Unknown::QueueFull),
         };
         match owner {
-            Some(uid) if blocked.contains(&uid) => AppRule::Blocked,
-            Some(uid) if watched.contains(&uid) => AppRule::Watched(uid),
-            Some(_) => AppRule::Normal,
-            None if self.proven.load(Ordering::Relaxed) => AppRule::Unknown,
+            Ok(uid) if blocked.contains(&uid) => AppRule::Blocked,
+            Ok(uid) if watched.contains(&uid) => AppRule::Watched(uid),
+            Ok(_) => AppRule::Normal,
+            Err(why) if self.proven.load(Ordering::Relaxed) => AppRule::Unknown(why),
             // Never answered: a broken lookup must not cut every app off.
-            None => AppRule::Normal,
+            Err(_) => AppRule::Normal,
         }
     }
 
@@ -221,7 +236,7 @@ mod tests {
         assert_eq!(flow(&gate, 10123), AppRule::Blocked, "blocked wins over watched");
         assert_eq!(flow(&gate, 10124), AppRule::Normal);
         assert_eq!(flow(&gate, 10125), AppRule::Watched(10125));
-        assert_eq!(flow(&gate, 1), AppRule::Unknown, "unknown owner on a working lookup");
+        assert_eq!(flow(&gate, 1), AppRule::Unknown(Unknown::NoOwner), "unknown owner on a working lookup");
         gate.set_blocked([]);
         gate.set_watched([]);
         assert_eq!(flow(&gate, 10123), AppRule::Normal);
@@ -261,7 +276,7 @@ mod tests {
         gate.set_lookup(Slow).unwrap();
         assert_eq!(flow(&gate, 10124), AppRule::Normal);
         // Port 2 stalls the lookup thread past the timeout: the blocked app's flow is not let go.
-        assert_eq!(flow(&gate, 2), AppRule::Unknown);
+        assert_eq!(flow(&gate, 2), AppRule::Unknown(Unknown::Timeout));
     }
 
     #[test]

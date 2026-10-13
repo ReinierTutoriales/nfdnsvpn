@@ -28,6 +28,7 @@
     <string name="dns_custom_hint">Formato tls://IP#nombre del certificado, separados por comas. Ejemplo: tls://9.9.9.9#dns.quad9.net</string>
     <string name="dns_custom_invalid">Formato no válido: tls://IP#nombre</string>
     <string name="settings_flows_refused">Conexiones rechazadas por el tope de seguridad (512 TCP, 256 UDP): %1$d</string>
+    <string name="settings_owner_unknown">Con reglas por app, descartadas por dueño no encontrado: %1$d (sin coincidencia %2$d · sin respuesta a tiempo %3$d · cola llena %4$d)</string>
     <string name="settings_dns_failed">Consultas sin respuesta del servidor DNS: %1$d</string>
     <string name="warning_dns_failing">El servidor DNS elegido no responde: cámbialo en Opciones › Servidor DNS.</string>
     <string name="action_allow">Permitir un dominio bloqueado…</string>

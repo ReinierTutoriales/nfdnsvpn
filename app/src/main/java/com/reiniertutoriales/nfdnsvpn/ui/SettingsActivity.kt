@@ -196,6 +196,7 @@ class SettingsActivity : ComponentActivity() {
             lines += getString(R.string.settings_counters, counters.queries, counters.blocked, counters.tcp, counters.udp, counters.quicRefused)
             lines += getString(R.string.settings_dns_failed, counters.dnsFailed)
             lines += getString(R.string.settings_flows_refused, counters.flowsRefused)
+            lines += getString(R.string.settings_owner_unknown, counters.ownerDrops, counters.ownerNoMatch, counters.ownerTimeout, counters.ownerQueueFull)
             lines += getString(R.string.usage, Debug.getPss() / 1024, Process.getElapsedCpuTime() / 1000)
         }
         return lines.joinToString("\n")

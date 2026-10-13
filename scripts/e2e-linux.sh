@@ -222,7 +222,7 @@ except ImportError:
 fake_dns()
 EOF
 srv "$PY" "$WORK/servers.py" "$WORK" > "$WORK/servers.log" 2>&1 & PIDS+=($!)
-srv python3 -m http.server 8080 --bind 0.0.0.0 --directory "$WORK" >/dev/null 2>&1 & PIDS+=($!)
+srv python3 -m http.server 8080 --bind 0.0.0.0 --directory "$WORK" > "$WORK/http.log" 2>&1 & PIDS+=($!)
 printf '||doubleclick.net^\n192.0.2.9\n' > "$WORK/list.txt"
 ip netns exec "$GW" env NFDNS_DOT_CA="$WORK/ca.der" NFDNS_BLOCK_UID="$(id -u "$BLOCKED_USER")" NFDNS_WATCH_UID="$(id -u "$WATCHED_USER")" NFDNS_APPS_NETNS="/var/run/netns/$TV" "$TUNNEL_BIN" tun0 192.0.2.1 "$WORK/list.txt" 10.111.0.1,8.8.8.8 > "$WORK/tunnel.log" 2>&1 &
 TUNNEL_PID=$!   # ip netns exec execs the binary, so this is the tunnel itself
@@ -519,14 +519,24 @@ check "HTTP bloqueado por Host" "blocked*" "$(out=$(app curl -s --max-time 5 -H 
 # (a stuck connection would hold its stack and relay buffers). Measured after TIME-WAIT.
 burst() {
     local ok=0 clients=()
-    for i in $(seq 1 50); do app curl -s --max-time 10 http://192.0.2.1:8080/small > "$WORK/p$i" & clients+=($!); done
+    for i in $(seq 1 50); do
+        ( app curl -s --max-time 10 http://192.0.2.1:8080/small > "$WORK/p$i"; echo $? > "$WORK/e$i" ) & clients+=($!)
+    done
     wait "${clients[@]}"
     for i in $(seq 1 50); do grep -q hello "$WORK/p$i" && ok=$((ok + 1)); done
     echo "$ok"
 }
+# Diagnosis of a burst: curl exit codes (7 refused, 28 timeout, 52 empty reply, 56 reset), the
+# owner-lookup counters of the tunnel (no match, timeout, queue full, drops) and server errors.
+owner_counters() { sleep 1.2; grep '^stats' "$WORK/tunnel.log" | tail -n 1 | cut -d' ' -f2 | cut -d, -f8-11; }
+http_errors() { grep -ciE 'error|traceback|reset|broken' "$WORK/http.log" || true; }
 RSS_AFTER=()
 for round in 1 2 3 4 5; do
+    owner_before=$(owner_counters); http_before=$(http_errors)
     check "Ráfaga $round: 50 conexiones en paralelo" "50" "$(burst)"
+    owner_after=$(owner_counters)
+    echo "INFO ráfaga $round: salida de curl [$(cat "$WORK"/e* | sort | uniq -c | awk '{printf "%s×%s ", $2, $1}')]; dueño (sin coincidencia,tiempo,cola,descartes) $owner_before → $owner_after; errores del servidor HTTP +$(( $(http_errors) - http_before ))"
+    rm -f "$WORK"/e*
     sleep 15   # closed connections stay in smoltcp's TIME-WAIT for about 10 s
     RSS_AFTER+=("$(awk '/VmRSS/ {print $2}' /proc/$TUNNEL_PID/status)")
 done
