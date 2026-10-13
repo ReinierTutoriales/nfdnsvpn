@@ -49,4 +49,44 @@ class RoutesTest {
             Routes.complement(Cidr.parse("0.0.0.0/0"), listOf(Cidr.parse("0.0.0.0/1"))),
         )
     }
+
+    private fun network(vararg resolvers: String, ipv6: Boolean = false) =
+        NetworkSnapshot.of(resolvers.map(InetAddress::getByName), ipv6)
+
+    @Test
+    fun aNewRouterResolverIsRoutedAndTheOldOneIsNot() {
+        val before = Routes.forTunnel(true, network("192.168.1.1"))
+        val after = Routes.forTunnel(true, network("192.168.0.1"))
+        assertTrue(covers(before, "192.168.1.1"))
+        assertTrue("DNS straight to the new router must be filtered", covers(after, "192.168.0.1"))
+        assertFalse(covers(after, "192.168.1.1"))
+        // Only the resolver itself: the rest of the LAN keeps going out directly.
+        assertFalse(covers(after, "192.168.0.2"))
+        assertTrue(covers(after, Routes.DNS_V4) && covers(after, "8.8.8.8"))
+    }
+
+    @Test
+    fun ipv6IsRoutedOnlyWhileTheNetworkHasIt() {
+        assertFalse(covers(Routes.forTunnel(true, network(ipv6 = false)), "2606:4700::6810:84e5"))
+        assertTrue("IPv6 traffic must not leave unfiltered", covers(Routes.forTunnel(true, network(ipv6 = true)), "2606:4700::6810:84e5"))
+        // Public resolvers' IPv6 addresses are routed either way (DNS forced into the tunnel).
+        assertTrue(covers(Routes.forTunnel(true, network(ipv6 = false)), "2001:4860:4860::8888"))
+        assertTrue(covers(Routes.forTunnel(true, network("fd00::1", ipv6 = true)), "fd00::1"))
+    }
+
+    @Test
+    fun lightModeRoutesOnlyResolvers() {
+        val routes = Routes.forTunnel(false, network("192.168.1.1", ipv6 = true))
+        assertTrue(covers(routes, "192.168.1.1") && covers(routes, "1.1.1.1"))
+        assertFalse(covers(routes, "93.184.216.34"))
+        assertFalse(covers(routes, "2606:4700::6810:84e5"))
+    }
+
+    @Test
+    fun theSameNetworkGivesAnEqualSnapshot() {
+        assertEquals(network("192.168.1.1", "192.168.1.2"), network("192.168.1.2", "192.168.1.1", "192.168.1.1"))
+        assertFalse(network("192.168.1.1") == network("192.168.1.1", ipv6 = true))
+        // Our own virtual resolvers, link-local and loopback are not the network's.
+        assertEquals(network(), network(Routes.DNS_V4, Routes.DNS_V6, "fe80::1", "127.0.0.1"))
+    }
 }

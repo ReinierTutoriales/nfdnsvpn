@@ -23,6 +23,45 @@ data class Cidr(val address: InetAddress, val prefix: Int) {
  * Android only accepts routes to add, not to exclude before API 33, hence the complement.
  */
 object Routes {
+    const val CLIENT_V4 = "10.111.0.2"
+    const val DNS_V4 = "10.111.0.1"
+    const val CLIENT_V6 = "fd00:6e66::2"
+    const val DNS_V6 = "fd00:6e66::1"
+
+    /** Google, Cloudflare, Quad9, OpenDNS and AdGuard: plain DNS, DoT and DoH endpoints. */
+    private val PUBLIC_RESOLVERS_V4 = listOf(
+        "8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "149.112.112.112",
+        "208.67.222.222", "208.67.220.220", "94.140.14.14", "94.140.15.15",
+    )
+    private val PUBLIC_RESOLVERS_V6 = listOf(
+        "2001:4860:4860::8888", "2001:4860:4860::8844", "2606:4700:4700::1111", "2606:4700:4700::1001",
+        "2620:fe::fe", "2620:fe::9", "2620:119:35::35", "2620:119:53::53",
+    )
+
+    /** Resolver addresses whose non-DNS traffic (DoH, QUIC) is refused by the core. */
+    val INTERCEPTED = listOf(DNS_V4, DNS_V6) + PUBLIC_RESOLVERS_V4 + PUBLIC_RESOLVERS_V6
+
+    private val virtualAddresses = listOf(DNS_V4, DNS_V6, CLIENT_V4, CLIENT_V6).map(InetAddress::getByName)
+
+    fun isVirtualAddress(address: InetAddress) = address in virtualAddresses
+
+    /**
+     * Every route of the interface for this network: our virtual resolvers, the public ones, the
+     * network's own resolvers (on the LAN, which the full tunnel leaves out: only those addresses
+     * are routed, so DNS sent straight to the router is filtered) and, in full mode, everything
+     * else except LAN and multicast, IPv6 only if the network has it (otherwise apps would try
+     * IPv6 first and fail).
+     */
+    fun forTunnel(fullTunnel: Boolean, network: NetworkSnapshot): List<Cidr> {
+        val hosts = (listOf(DNS_V4, DNS_V6) + PUBLIC_RESOLVERS_V4 + PUBLIC_RESOLVERS_V6).map(InetAddress::getByName) + network.resolvers
+        val routes = hosts.map { Cidr(it, it.address.size * 8) }.toMutableList()
+        if (fullTunnel) {
+            routes += fullV4
+            if (network.hasIpv6) routes += FULL_V6
+        }
+        return routes.distinct()
+    }
+
     val EXCLUDED_V4 = listOf(
         "0.0.0.0/8", "10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16",
         "224.0.0.0/3", // multicast and reserved, including the broadcast address

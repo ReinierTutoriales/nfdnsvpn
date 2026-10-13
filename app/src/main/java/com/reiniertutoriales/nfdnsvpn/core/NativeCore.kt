@@ -42,6 +42,8 @@ object NativeCore {
     /** Blocks until [nativeTunnelStop]; empty string, or the error that ended the tunnel. */
     @JvmStatic external fun nativeTunnelRun(tunnel: Long): String
     @JvmStatic external fun nativeTunnelStop(tunnel: Long)
+    /** The TUN descriptor for the next [nativeTunnelRun]; rules, filter and resolvers are kept. */
+    @JvmStatic external fun nativeTunnelSetFd(tunnel: Long, fd: Int)
     /** `queries,blocked,tcp,udp,quic_refused,dns_failed,flows_refused` followed by recently blocked names, one per line. */
     @JvmStatic external fun nativeTunnelStats(tunnel: Long): String
     @JvmStatic external fun nativeTunnelFree(tunnel: Long)
@@ -96,6 +98,11 @@ class NativeTunnel(filter: Long, fd: Int, intercepted: List<String>) : Closeable
     /** Takes ownership of [filter], also when the tunnel is already closed. */
     @Synchronized fun setFilter(filter: Long) {
         if (handle != 0L) NativeCore.nativeTunnelSetFilter(handle, filter) else NativeCore.nativeDestroy(filter)
+    }
+
+    /** Only between runs (after [run] returned, before the next one). */
+    @Synchronized fun setFd(fd: Int) {
+        if (handle != 0L) NativeCore.nativeTunnelSetFd(handle, fd)
     }
 
     @Synchronized fun setUpstream(servers: List<String>) {

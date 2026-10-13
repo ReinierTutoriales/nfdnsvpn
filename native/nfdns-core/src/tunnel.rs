@@ -20,7 +20,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsRawFd, RawFd};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
@@ -164,7 +164,10 @@ impl SharedFilter {
 }
 
 pub struct Tunnel {
-    fd: RawFd,
+    /// The TUN descriptor the next [`Tunnel::run`] reads; replaced when the network changes.
+    fd: AtomicI32,
+    /// Set while [`Tunnel::run`] is executing: a second run at once is refused.
+    running: AtomicBool,
     filter: SharedFilter,
     intercepted: Arc<Vec<IpAddr>>,
     upstream: Mutex<Arc<Upstream>>,
@@ -179,7 +182,8 @@ impl Tunnel {
     /// traffic is refused, so DoH and QUIC to them fall back to plain DNS.
     pub fn new(fd: RawFd, filter: Filter, intercepted: Vec<IpAddr>) -> Self {
         Tunnel {
-            fd,
+            fd: AtomicI32::new(fd),
+            running: AtomicBool::new(false),
             filter: SharedFilter(Arc::new(RwLock::new(Arc::new(filter)))),
             intercepted: Arc::new(intercepted),
             upstream: Mutex::new(Arc::new(Upstream::Plain(Vec::new()))),
@@ -246,22 +250,38 @@ impl Tunnel {
         self.stop.notify_one();
     }
 
-    /// Blocks until [`Tunnel::stop`] or a fatal TUN error. Every flow is closed on return.
+    /// The TUN descriptor for the next [`Tunnel::run`] (a new interface after a network change).
+    /// Filter, app rules, resolvers and counters are kept; open flows end with the old run.
+    pub fn set_fd(&self, fd: RawFd) {
+        self.fd.store(fd, Ordering::SeqCst);
+    }
+
+    /// Blocks until [`Tunnel::stop`] or a fatal TUN error. Every flow is closed on return. Only one
+    /// run at a time: a second concurrent call fails at once, so two loops never read one TUN.
     pub fn run(&self) -> io::Result<()> {
-        set_nonblocking(self.fd)?;
+        if self.running.swap(true, Ordering::SeqCst) {
+            return Err(io::Error::other("tunnel already running"));
+        }
+        let result = self.run_once(self.fd.load(Ordering::SeqCst));
+        self.running.store(false, Ordering::SeqCst);
+        result
+    }
+
+    fn run_once(&self, fd: RawFd) -> io::Result<()> {
+        set_nonblocking(fd)?;
         let runtime = tokio::runtime::Builder::new_current_thread().enable_io().enable_time().build()?;
         let result = runtime.block_on(async {
             tokio::select! {
                 _ = self.stop.notified() => Ok(()),
-                result = self.serve() => result,
+                result = self.serve(fd) => result,
             }
         });
         runtime.shutdown_timeout(Duration::from_millis(500));
         result
     }
 
-    async fn serve(&self) -> io::Result<()> {
-        let tun = Arc::new(AsyncFd::new(TunFd(self.fd))?);
+    async fn serve(&self, fd: RawFd) -> io::Result<()> {
+        let tun = Arc::new(AsyncFd::new(TunFd(fd))?);
         let (stack, runner, udp, tcp) = StackBuilder::default()
             .enable_tcp(true)
             .enable_udp(true)
@@ -985,6 +1005,85 @@ mod tests {
         thread::sleep(Duration::from_millis(300));
         assert_eq!(tunnel.dns_slots.available_permits(), 0, "every slot taken, none beyond");
         assert_eq!(tunnel.stats().queries.load(Ordering::Relaxed), DNS_IN_FLIGHT as u64 + 50);
+        tunnel.stop();
+    }
+
+    /// A packet from the tunnel within `ms`, or `None`.
+    fn try_receive(fd: &OwnedFd, ms: i64) -> Option<Vec<u8>> {
+        let timeout = libc::timeval { tv_sec: ms / 1000, tv_usec: (ms % 1000) * 1000 };
+        let mut buffer = vec![0u8; MAX_PACKET];
+        // SAFETY: valid descriptor, option value and buffer.
+        let n = unsafe {
+            libc::setsockopt(
+                fd.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                (&timeout as *const libc::timeval).cast(),
+                std::mem::size_of::<libc::timeval>() as u32,
+            );
+            libc::read(fd.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len())
+        };
+        (n > 0).then(|| {
+            buffer.truncate(n as usize);
+            buffer
+        })
+    }
+
+    #[test]
+    fn a_second_run_at_once_is_refused() {
+        let (_app, tun) = fake_tun();
+        let tunnel = start(&tun);
+        thread::sleep(Duration::from_millis(100));
+        assert!(tunnel.run().is_err(), "two loops must never read one TUN");
+        tunnel.stop();
+    }
+
+    #[test]
+    fn a_new_interface_keeps_filter_and_app_rules() {
+        let (old_app, old_tun) = fake_tun();
+        let (new_app, new_tun) = fake_tun();
+        let mut builder = FilterBuilder::default();
+        builder.add_list("||doubleclick.net^\n");
+        let tunnel = Arc::new(Tunnel::new(old_tun.as_raw_fd(), builder.build(), vec![ip("10.111.0.1")]));
+        tunnel.set_owner_lookup(BlockedPort(41001)).unwrap();
+        tunnel.set_blocked_apps([10123]);
+        let client = ip("10.111.0.2");
+        let blocked_query = |id| udp_packet(client, ip("10.111.0.1"), 40000 + id, 53, &build_query(id, "ads.doubleclick.net", TYPE_A));
+        let run = |tunnel: &Arc<Tunnel>| {
+            let (runner, (done, finished)) = (tunnel.clone(), std::sync::mpsc::channel());
+            thread::spawn(move || done.send(runner.run()).unwrap());
+            finished
+        };
+
+        let finished = run(&tunnel);
+        send(&old_app, &blocked_query(1));
+        assert!(try_receive(&old_app, 2000).is_some(), "old interface answers before the change");
+        // Network change: stop, point at the new interface, run again (what the service does).
+        tunnel.stop();
+        finished.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        tunnel.set_fd(new_tun.as_raw_fd());
+        let _finished = run(&tunnel);
+
+        send(&new_app, &blocked_query(2));
+        let reply = try_receive(&new_app, 2000).expect("new interface answers");
+        let reply = packet::parse(&reply).unwrap();
+        assert_eq!(&reply.payload[reply.payload.len() - 4..], &[0, 0, 0, 0], "filter kept");
+        send(&old_app, &blocked_query(3));
+        assert!(try_receive(&old_app, 500).is_none(), "nothing is read from the old interface");
+
+        // App rules kept: the blocked app's flow is dropped, another app's goes through.
+        let echo = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let echo_port = echo.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let mut buffer = [0u8; 512];
+            while let Ok((n, from)) = echo.recv_from(&mut buffer) {
+                echo.send_to(&buffer[..n], from).unwrap();
+            }
+        });
+        send(&new_app, &udp_packet(client, ip("127.0.0.1"), 41001, echo_port, b"blocked app"));
+        send(&new_app, &udp_packet(client, ip("127.0.0.1"), 41002, echo_port, b"other app"));
+        let echoed = try_receive(&new_app, 2000).expect("other app answered");
+        assert_eq!(packet::parse(&echoed).unwrap().payload, b"other app");
         tunnel.stop();
     }
 

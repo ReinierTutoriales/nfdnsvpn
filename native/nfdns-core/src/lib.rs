@@ -232,6 +232,19 @@ pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativ
     unowned.with_env(|env| -> jni::errors::Result<JString<'caller>> { env.new_string(outcome) }).resolve::<ThrowRuntimeExAndDefault>()
 }
 
+/// The TUN descriptor for the next `nativeTunnelRun` (new interface after a network change).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelSetFd<'caller>(
+    _unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    fd: jint,
+) {
+    if let Some(t) = tunnel(handle) {
+        t.set_fd(fd);
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_reiniertutoriales_nfdnsvpn_core_NativeCore_nativeTunnelStop<'caller>(
     _unowned: EnvUnowned<'caller>,

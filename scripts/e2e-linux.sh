@@ -61,6 +61,8 @@ srv ip addr add 192.0.2.1/24 dev veth-srv
 srv ip addr add 192.0.2.9/24 dev veth-srv
 # An address the fake DNS never gives out: a "hardcoded IP" for the watched-app checks.
 srv ip addr add 192.0.2.3/24 dev veth-srv
+# The router of the network the TV moves to, with its own plain DNS.
+srv ip addr add 192.0.2.7/24 dev veth-srv
 if (( HAS_IPV6 )); then
     gw ip addr add 2001:db8:1::2/64 dev veth-gw nodad
     srv ip addr add 2001:db8:1::1/64 dev veth-srv nodad
@@ -109,11 +111,25 @@ def banner():
         c, _ = s.accept(); threading.Thread(target=serve, args=(c,), daemon=True).start()
 def encode(name):
     return b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00"
+def tally(name):
+    # Queries a plain resolver received, so the checks can see where DNS really went.
+    path = os.path.join(sys.argv[1], name + ".count")
+    total = int(open(path).read()) + 1 if os.path.exists(path) else 1
+    open(path, "w").write(str(total))
+def router_dns():
+    # The new network's router: answers 192.0.2.77, plain. Nothing should ever reach it.
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("192.0.2.7", 53))
+    while True:
+        q, peer = s.recvfrom(2048); tally("router-dns")
+        end = 12
+        while q[end] != 0: end += q[end] + 1
+        s.sendto(q[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00" + q[12:end + 5]
+                 + b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + socket.inet_aton("192.0.2.77"), peer)
 def fake_dns():
     # Every name resolves to 192.0.2.1; cloaked.example hides behind a tracker CNAME.
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("192.0.2.1", 53))
     while True:
-        q, peer = s.recvfrom(2048)
+        q, peer = s.recvfrom(2048); tally("plain-dns")
         end, labels = 12, []
         while q[end] != 0:
             labels.append(q[end + 1:end + 1 + q[end]].decode()); end += q[end] + 1
@@ -194,6 +210,7 @@ def dot():
             c.close(); continue
         threading.Thread(target=serve, args=(c,), daemon=True).start()
 threading.Thread(target=dot, daemon=True).start()
+threading.Thread(target=router_dns, daemon=True).start()
 if socket.has_ipv6 and os.path.isdir("/proc/sys/net/ipv6"):
     threading.Thread(target=udp_echo, args=(socket.AF_INET6, "2001:db8:1::1"), daemon=True).start()
     threading.Thread(target=http_v6, daemon=True).start()
@@ -204,7 +221,7 @@ except ImportError:
     pass
 fake_dns()
 EOF
-srv "$PY" "$WORK/servers.py" "$WORK" > /dev/null 2>&1 & PIDS+=($!)
+srv "$PY" "$WORK/servers.py" "$WORK" > "$WORK/servers.log" 2>&1 & PIDS+=($!)
 srv python3 -m http.server 8080 --bind 0.0.0.0 --directory "$WORK" >/dev/null 2>&1 & PIDS+=($!)
 printf '||doubleclick.net^\n192.0.2.9\n' > "$WORK/list.txt"
 ip netns exec "$GW" env NFDNS_DOT_CA="$WORK/ca.der" NFDNS_BLOCK_UID="$(id -u "$BLOCKED_USER")" NFDNS_WATCH_UID="$(id -u "$WATCHED_USER")" NFDNS_APPS_NETNS="/var/run/netns/$TV" "$TUNNEL_BIN" tun0 192.0.2.1 "$WORK/list.txt" 10.111.0.1,8.8.8.8 > "$WORK/tunnel.log" 2>&1 &
@@ -244,6 +261,17 @@ if cmd == "dnstime":
     except OSError:
         answer = "timeout"
     print(answer, int((time.monotonic() - start) * 1000))
+elif cmd == "dnsloop":
+    # Queries every 100 ms for N seconds: how many answers of each kind (the path DNS took).
+    seen, end = {}, time.time() + float(sys.argv[2])
+    while time.time() < end:
+        try:
+            answer = query(sys.argv[3], "loop%d.example" % int(time.time() * 1000))
+        except OSError:
+            answer = "timeout"
+        seen[answer] = seen.get(answer, 0) + 1
+        time.sleep(0.1)
+    print(" ".join("%s=%d" % kv for kv in sorted(seen.items())))
 elif cmd == "dns":
     print(query(sys.argv[2], sys.argv[3]))
 elif cmd == "many":
@@ -429,6 +457,48 @@ wait "$HANG" || true
 # First provider drops everything (192.0.2.250 has no owner on the server's network: no ARP
 # answer, its SYNs go unanswered), second one works: the first query must be answered by the
 # second within the budget, not lost while the first connection attempt times out.
+# Network change (other Wi-Fi or Ethernet, new router DNS 192.0.2.7), in the service's order:
+# the new interface exists and gets the routes before the old one is closed; the same tunnel
+# continues on it. DNS must keep going encrypted the whole time, and never reach a plain
+# resolver: neither the old one (192.0.2.1:53) nor the new router.
+plain_before=$(cat "$WORK/plain-dns.count" 2>/dev/null || echo 0)
+queries_before=$(grep '^stats' "$WORK/tunnel.log" | tail -n 1 | cut -d' ' -f2 | cut -d, -f1)
+app "$PY" "$WORK/client.py" dnsloop 6 10.111.0.1 > "$WORK/transition.txt" &
+LOOP=$!
+sleep 1
+echo tun1 > "$WORK/list.txt.newtun"
+for _ in $(seq 1 50); do grep -q "newtun ready" "$WORK/tunnel.log" && break; sleep 0.1; done
+ip -n "$GW" link set tun1 netns "$TV"
+tv ip addr add 10.111.0.2/32 dev tun1
+tv ip link set tun1 up
+tv ip route replace default dev tun1
+tv ip route add 192.0.2.7/32 dev tun1
+touch "$WORK/list.txt.switch"
+for _ in $(seq 1 50); do grep -q "^switched" "$WORK/tunnel.log" && break; sleep 0.1; done
+wait "$LOOP" || true
+echo "INFO DNS durante el cambio de red: $(cat "$WORK/transition.txt")"
+check "Cambio de red: el túnel sigue en la interfaz nueva" "1" "$(grep -c '^switched' "$WORK/tunnel.log")"
+# Only the new interface stays open (tun0 was created persistent by this script, so the
+# device itself outlives its descriptor; what matters is that the tunnel let go of it).
+check "Cambio de red: el túnel solo tiene abierta la interfaz nueva" "1" "$(find /proc/"$TUNNEL_PID"/fd -lname /dev/net/tun 2>/dev/null | wc -l)"
+tv ip link del tun0
+check "Cambio de red: ninguna respuesta del DNS en claro" "none" "$(grep -q '192.0.2.1=' "$WORK/transition.txt" && echo leaked || echo none)"
+check "Cambio de red: el DNS en claro no recibió nada" "$plain_before" "$(cat "$WORK/plain-dns.count" 2>/dev/null || echo 0)"
+check "Cambio de red: DNS cifrado responde tras el cambio" "192.0.2.53" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 after-change.example)"
+check "Router nuevo: su DNS queda interceptado (contesta el cifrado)" "192.0.2.53" "$(app "$PY" "$WORK/client.py" dns 192.0.2.7 via-router.example)"
+check "Router nuevo: no le llega ninguna consulta" "0" "$(cat "$WORK/router-dns.count" 2>/dev/null || echo 0)"
+check "Cambio de red: mismo túnel (contadores continúan)" "1" "$(( $(grep '^stats' "$WORK/tunnel.log" | tail -n 1 | cut -d' ' -f2 | cut -d, -f1) > queries_before ? 1 : 0 ))"
+check "Cambio de red: app bloqueada sigue sin internet" "blocked*" "$(out=$(blocked_app curl -s --max-time 5 http://192.0.2.1:8080/small); [[ -z "$out" ]] && echo blocked || echo "served: $out")"
+check "Cambio de red: app vigilada sigue sin IP fija" "blocked*" "$(out=$(watched_app curl -s --max-time 5 http://192.0.2.3:8080/small); [[ -z "$out" ]] && echo blocked || echo "served: $out")"
+check "Cambio de red: SNI bloqueado sigue cortado" "blocked (curl [35][56])" "$(app curl -sk --max-time 5 --resolve ads.doubleclick.net:8443:192.0.2.1 https://ads.doubleclick.net:8443/small >/dev/null 2>&1 && echo served || echo "blocked (curl $?)")"
+check "Cambio de red: TCP normal funciona" "hello through the tunnel" "$(app curl -s --max-time 5 http://192.0.2.1:8080/small)"
+if (( HAS_IPV6 )); then
+    # IPv6 comes with the new network: routed into the new interface, it is filtered too.
+    tv ip addr add fd00:6e66::2/128 dev tun1 nodad
+    tv ip -6 route replace default dev tun1
+    check "Cambio de red: IPv6 por la interfaz nueva" "hello through the tunnel" "$(app curl -sg --max-time 5 'http://[2001:db8:1::1]:8080/small')"
+    check "Cambio de red: DNS por IPv6 filtrado" "0.0.0.0" "$(app "$PY" "$WORK/client.py" dns fd00:6e66::1 pubads.g.doubleclick.net)"
+fi
 use_upstream "tls://192.0.2.250#dns.e2e,tls://192.0.2.1#dns.e2e"
 read -r first_down_answer first_down_ms < <(app "$PY" "$WORK/client.py" dnstime 10.111.0.1 first-down.example)
 echo "INFO primer proveedor caído: respuesta $first_down_answer en $first_down_ms ms"
@@ -537,5 +607,6 @@ check "Tope UDP: 256 flujos como mucho" "1" "$(( udp_answered >= 200 && udp_answ
 check "Rechazos por tope contados" "1" "$(( $(grep '^stats' "$WORK/tunnel.log" | tail -n 1 | cut -d, -f7) > 0 ? 1 : 0 ))"
 
 kill -0 "$TUNNEL_PID" && echo "PASS túnel sigue vivo" || { echo "FAIL túnel caído"; cat "$WORK/tunnel.log"; FAILURES=$((FAILURES + 1)); }
+(( FAILURES )) && { echo "--- servers.log ---"; tail -n 30 "$WORK/servers.log"; }
 echo "Fallos: $FAILURES"
 exit "$FAILURES"

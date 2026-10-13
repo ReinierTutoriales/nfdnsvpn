@@ -345,6 +345,22 @@ Para esas apps queda el último recurso: **cortarles internet por completo** (ab
   presupuesto de una consulta: con el primer proveedor descartando paquetes, la primera consulta
   recibía SERVFAIL a los 2502 ms. Ahora la contesta el segundo (e2e en Linux: 298 ms). No medido
   en la onn ni con proveedores reales.
+- **Cambio de red** (otra Wi-Fi, Ethernet, el router da otro DNS, aparece o desaparece IPv6):
+  antes las rutas se calculaban una sola vez al arrancar. El DNS del router nuevo quedaba sin
+  enrutar (una app que le preguntara directamente salía en claro) y, si aparecía IPv6, todo el
+  tráfico IPv6 salía sin filtrar. Ahora el servicio compara el estado de la red (resolvedores e
+  IPv6) y, si cambia, establece la interfaz nueva con las rutas del estado más reciente **antes**
+  de cerrar la anterior; el mismo túnel (filtro, reglas por app, DNS cifrado, contadores) sigue en
+  ella. Nunca hay dos lecturas a la vez de una interfaz: una segunda ejecución se rechaza.
+  - Probado en la JVM: rutas del router nuevo y no del viejo, IPv6 solo con red IPv6, modo ligero.
+  - Probado en Linux (e2e): durante el cambio, 51 de 51 consultas contestadas por el DNS cifrado,
+    ninguna por el DNS en claro, que no recibió nada; el DNS del router nuevo queda interceptado
+    y no recibe nada; reglas por app, SNI bloqueado y contadores siguen; solo queda abierta la
+    interfaz nueva. IPv6 por la interfaz nueva, solo en el CI (el kernel local no tiene IPv6).
+  - **No probado en Android:** que `establish()` sustituya la interfaz sin hueco, y que los avisos
+    de Android lleguen en cambios reales Wi-Fi/Ethernet. Pendiente en la onn.
+  - Límite: los resolvedores link-local (fe80::…) no se enrutan (dirección con ámbito de interfaz); una app que les
+    pregunte directamente no pasa por el filtro.
 - **Reloj:** TLS necesita la fecha correcta y una TV sin pila de reloj la toma de la red. Si el DNS
   cifrado falla, `time.android.com`, `time.google.com` y `time.gstatic.com` se contestan en local
   con las IP fijas publicadas de Google Public NTP, para que la hora se pueda corregir.

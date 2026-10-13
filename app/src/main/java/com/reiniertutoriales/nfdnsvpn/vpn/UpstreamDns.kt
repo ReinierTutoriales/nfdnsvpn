@@ -6,7 +6,6 @@ import android.net.LinkProperties
 import android.net.Network
 import android.os.Build
 import java.net.Inet6Address
-import java.net.InetAddress
 
 /**
  * Watches the real network: whether it has IPv6, its resolvers (only to route them into the
@@ -17,6 +16,8 @@ import java.net.InetAddress
 class UpstreamDns(
     context: Context,
     private val onPrivateDns: (String?) -> Unit,
+    /** The routes' inputs changed; called on the connectivity thread with the latest snapshot. */
+    private val onNetworkChanged: (NetworkSnapshot) -> Unit,
 ) {
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
 
@@ -24,23 +25,21 @@ class UpstreamDns(
         override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = update(properties)
     }
 
-    /** IPv6 default route on the real network when this object was created. */
-    val hasIpv6: Boolean
-
-    /**
-     * The real network's resolvers when this object was created (usually the router). They are
-     * routed into the tunnel too, so an app sending DNS straight to the router is filtered.
-     */
-    val initialServers: List<InetAddress>
+    /** The latest state of the real network; the interface is built from it. */
+    @Volatile var snapshot: NetworkSnapshot
+        private set
 
     init {
         val properties = connectivity.activeNetwork?.let(connectivity::getLinkProperties)
-        hasIpv6 = properties?.routes?.any { it.isDefaultRoute && it.destination.address is Inet6Address } == true
-        initialServers = properties?.dnsServers.orEmpty()
-            .filterNot { ShieldVpnService.isVirtualAddress(it) || it.isLinkLocalAddress || it.isLoopbackAddress }
+        snapshot = properties?.let(::snapshotOf) ?: NetworkSnapshot(emptyList(), false)
         properties?.let(::update)
         connectivity.registerDefaultNetworkCallback(callback)
     }
+
+    private fun snapshotOf(properties: LinkProperties) = NetworkSnapshot.of(
+        properties.dnsServers,
+        properties.routes.any { it.isDefaultRoute && it.destination.address is Inet6Address },
+    )
 
     fun close() {
         runCatching { connectivity.unregisterNetworkCallback(callback) }
@@ -49,5 +48,11 @@ class UpstreamDns(
     private fun update(properties: LinkProperties) {
         // Strict private DNS sends queries over TLS to the provider and skips our resolver.
         onPrivateDns(if (Build.VERSION.SDK_INT >= 28) properties.privateDnsServerName else null)
+        // Losing the network keeps the last snapshot: its routes stay in place, nothing leaks.
+        val latest = snapshotOf(properties)
+        if (latest != snapshot) {
+            snapshot = latest
+            onNetworkChanged(latest)
+        }
     }
 }

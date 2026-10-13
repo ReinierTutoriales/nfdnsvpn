@@ -115,7 +115,8 @@ fn main() {
         builder.build()
     };
     let intercepted = intercepted.split(',').filter_map(|s| s.parse().ok()).collect();
-    let tunnel = Arc::new(Tunnel::new(open_tun(tun), load(list), intercepted));
+    let tunnel_fd = open_tun(tun);
+    let tunnel = Arc::new(Tunnel::new(tunnel_fd, load(list), intercepted));
     let resolvers = |list: &str| match (Upstream::parse(list), std::env::var("NFDNS_DOT_CA")) {
         // The e2e test's DNS-over-TLS server has a certificate from its own CA (DER file).
         (Upstream::Tls(client), Ok(ca)) => Upstream::Tls(client.trusting(vec![std::fs::read(ca).expect("CA file").into()])),
@@ -130,6 +131,12 @@ fn main() {
     }
     let reporter = tunnel.clone();
     let list = list.clone();
+    // Network change, in the service's order: `<list>.newtun` names a new TUN, which is opened
+    // here (the test then moves it and switches the routes to it); `<list>.switch` then stops the
+    // run, the same tunnel continues on the new descriptor and the old one is closed.
+    let pending_tun: Arc<std::sync::Mutex<Option<i32>>> = Arc::default();
+    let pending = pending_tun.clone();
+    let (newtun_file, switch_file) = (format!("{list}.newtun"), format!("{list}.switch"));
     // A changed `<list>.upstream` file replaces the resolvers, as choosing one in Options does.
     let upstream_file = format!("{list}.upstream");
     std::thread::spawn(move || {
@@ -145,6 +152,14 @@ fn main() {
                 reporter.set_filter(load(&list));
                 println!("reloaded {}", reporter.rule_count());
             }
+            if let Ok(name) = std::fs::read_to_string(&newtun_file) {
+                let _ = std::fs::remove_file(&newtun_file);
+                *pending.lock().unwrap() = Some(open_tun(name.trim()));
+                println!("newtun ready {}", name.trim());
+            }
+            if std::fs::remove_file(&switch_file).is_ok() {
+                reporter.stop();
+            }
             let now = modified(&upstream_file);
             if now != seen_upstream {
                 seen_upstream = now;
@@ -154,5 +169,14 @@ fn main() {
             }
         }
     });
-    tunnel.run().expect("tunnel");
+    let mut current = tunnel_fd;
+    loop {
+        tunnel.run().expect("tunnel");
+        let Some(next) = pending_tun.lock().unwrap().take() else { break };
+        tunnel.set_fd(next);
+        // SAFETY: the old descriptor is ours and no run reads it any more.
+        unsafe { libc::close(current) };
+        current = next;
+        println!("switched");
+    }
 }

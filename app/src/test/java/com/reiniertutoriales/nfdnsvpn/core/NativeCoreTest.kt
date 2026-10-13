@@ -47,6 +47,7 @@ class NativeCoreTest {
         try {
             tunnel.setUpstream(listOf("192.168.1.1", "2001:db8::1"))
             tunnel.setUpstream(listOf("tls://1.1.1.1#cloudflare-dns.com"))
+            tunnel.setFd(-1)
             val stats = tunnel.stats()
             assertNotNull(stats)
             assertEquals(0L, stats!!.queries)

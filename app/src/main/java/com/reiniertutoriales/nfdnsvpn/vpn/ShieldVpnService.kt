@@ -23,11 +23,10 @@ import com.reiniertutoriales.nfdnsvpn.core.NativeTunnel
 import com.reiniertutoriales.nfdnsvpn.lists.ListRepository
 import com.reiniertutoriales.nfdnsvpn.ui.MainActivity
 import java.io.IOException
-import java.net.Inet4Address
-import java.net.InetAddress
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Local VPN. The packet loop runs in the Rust core ([NativeTunnel]) in both modes:
@@ -49,29 +48,8 @@ class ShieldVpnService : VpnService() {
         private const val CHANNEL = "shield"
         private const val NOTIFICATION_ID = 1
 
-        private const val CLIENT_V4 = "10.111.0.2"
-        private const val DNS_V4 = "10.111.0.1"
-        private const val CLIENT_V6 = "fd00:6e66::2"
-        private const val DNS_V6 = "fd00:6e66::1"
-
-        /** Google, Cloudflare, Quad9, OpenDNS and AdGuard: plain DNS, DoT and DoH endpoints. */
-        private val PUBLIC_RESOLVERS_V4 = listOf(
-            "8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "149.112.112.112",
-            "208.67.222.222", "208.67.220.220", "94.140.14.14", "94.140.15.15",
-        )
-        private val PUBLIC_RESOLVERS_V6 = listOf(
-            "2001:4860:4860::8888", "2001:4860:4860::8844", "2606:4700:4700::1111", "2606:4700:4700::1001",
-            "2620:fe::fe", "2620:fe::9", "2620:119:35::35", "2620:119:53::53",
-        )
-        /** Resolver addresses whose non-DNS traffic (DoH, QUIC) is refused by the core. */
-        private val INTERCEPTED = listOf(DNS_V4, DNS_V6) + PUBLIC_RESOLVERS_V4 + PUBLIC_RESOLVERS_V6
-
         /** How often due lists are looked for; each list is still downloaded at most once a day. */
         private const val LIST_CHECK_HOURS = 6L
-
-        private val virtualAddresses = listOf(DNS_V4, DNS_V6, CLIENT_V4, CLIENT_V6).map(InetAddress::getByName)
-
-        fun isVirtualAddress(address: InetAddress) = address in virtualAddresses
 
         /**
          * Uids of installed packages. Uids below the first app uid are shared by system
@@ -103,6 +81,8 @@ class ShieldVpnService : VpnService() {
 
     @Volatile private var stopping = false
     @Volatile private var tunnel: NativeTunnel? = null
+    /** The network changed since the interface was built: rebuild it with the latest state. */
+    private val rebuild = AtomicBoolean(false)
     /** Daily list checks and filter rebuilds, one at a time, for the running tunnel. */
     @Volatile private var maintenance: ScheduledExecutorService? = null
     private var worker: Thread? = null
@@ -219,17 +199,26 @@ class ShieldVpnService : VpnService() {
         var jobs: ScheduledExecutorService? = null
         try {
             filter = loadFilter()
-            upstream = UpstreamDns(this, onPrivateDns = { ShieldState.privateDnsStrict = it })
+            upstream = UpstreamDns(this, onPrivateDns = { ShieldState.privateDnsStrict = it }, onNetworkChanged = {
+                // The running loop returns, and the loop below rebuilds with the latest snapshot.
+                rebuild.set(true)
+                tunnel?.stop()
+            })
             if (stopping) return
-            tun = establish(fullTunnel, upstream.hasIpv6, upstream.initialServers) ?: throw IOException(getString(R.string.error_no_permission))
+            // A change from here on is caught: either this establish already sees it, or the
+            // callback sets the flag and the loop below rebuilds.
+            rebuild.set(false)
+            tun = establish(fullTunnel, upstream.snapshot) ?: throw IOException(getString(R.string.error_no_permission))
             // Without "Block connections without VPN", traffic flows unfiltered whenever this
             // service is not running (crash, update, low memory kill): the screen warns about it.
             ShieldState.lockdown = Build.VERSION.SDK_INT < 29 || isLockdownEnabled
             // The tunnel takes over the filter handle.
-            current = NativeTunnel(filter, tun.fd, INTERCEPTED).also { filter = 0L }
+            current = NativeTunnel(filter, tun.fd, Routes.INTERCEPTED).also { filter = 0L }
             // Published before the first push, so a network change in between is not lost.
             tunnel = current
             ShieldState.tunnel = current
+            // Changed before the tunnel was published (its stop() had nothing to stop yet).
+            if (rebuild.get()) current.stop()
             applyDns(current)
             applyAppRules(current)
             if (stopping) return
@@ -238,8 +227,22 @@ class ShieldVpnService : VpnService() {
             }
             maintenance = jobs
             ShieldState.phase = ShieldState.Phase.RUNNING
-            val failure = current.run()
-            if (failure.isNotEmpty() && !stopping) throw IOException(failure)
+            while (true) {
+                val failure = current.run()
+                if (stopping) break
+                if (!rebuild.getAndSet(false)) {
+                    if (failure.isNotEmpty()) throw IOException(failure)
+                    break
+                }
+                // Network change. The new interface is established before the old one is closed:
+                // Android moves the routes over in one step, so no packet goes out unfiltered in
+                // between. Then the same tunnel (filter, app rules, resolvers) reads the new one.
+                val next = establish(fullTunnel, upstream.snapshot) ?: throw IOException(getString(R.string.error_no_permission))
+                current.setFd(next.fd)
+                runCatching { tun?.close() }
+                tun = next
+                Log.i(TAG, "Interface rebuilt for the new network")
+            }
         } catch (e: Exception) {
             if (!stopping) {
                 Log.e(TAG, "VPN stopped", e)
@@ -314,32 +317,21 @@ class ShieldVpnService : VpnService() {
         return handle
     }
 
-    private fun establish(fullTunnel: Boolean, hasIpv6: Boolean, networkResolvers: List<InetAddress>): ParcelFileDescriptor? {
+    private fun establish(fullTunnel: Boolean, network: NetworkSnapshot): ParcelFileDescriptor? {
         val builder = Builder()
             .setSession(getString(R.string.app_name))
             .setMtu(1500)
-            .addAddress(CLIENT_V4, 32)
-            .addDnsServer(DNS_V4)
-            .addRoute(DNS_V4, 32)
-            .addAddress(CLIENT_V6, 128)
-            .addDnsServer(DNS_V6)
-            .addRoute(DNS_V6, 128)
+            .addAddress(Routes.CLIENT_V4, 32)
+            .addDnsServer(Routes.DNS_V4)
+            .addAddress(Routes.CLIENT_V6, 128)
+            .addDnsServer(Routes.DNS_V6)
             .setBlocking(false)
             .setConfigureIntent(
                 PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
             )
-        PUBLIC_RESOLVERS_V4.forEach { builder.addRoute(it, 32) }
-        PUBLIC_RESOLVERS_V6.forEach { builder.addRoute(it, 128) }
-        // The router's DNS is on the LAN, which the full tunnel leaves out: route just that
-        // address, so DNS sent straight to it is filtered while the rest of the LAN stays direct.
-        for (resolver in networkResolvers) {
-            runCatching { builder.addRoute(resolver, if (resolver is Inet4Address) 32 else 128) }
-                .onFailure { Log.w(TAG, "Cannot route resolver ${resolver.hostAddress}", it) }
-        }
-        if (fullTunnel) {
-            Routes.fullV4.forEach { builder.addRoute(it.address, it.prefix) }
-            // Without IPv6 upstream, routing ::/0 would make apps try IPv6 first and fail.
-            if (hasIpv6) Routes.FULL_V6.forEach { builder.addRoute(it.address, it.prefix) }
+        for (route in Routes.forTunnel(fullTunnel, network)) {
+            runCatching { builder.addRoute(route.address, route.prefix) }
+                .onFailure { Log.w(TAG, "Cannot route $route", it) }
         }
         // Our own list downloads, DNS forwarding and relay sockets must not loop back.
         builder.addDisallowedApplication(packageName)
