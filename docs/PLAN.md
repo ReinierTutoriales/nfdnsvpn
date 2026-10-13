@@ -339,6 +339,12 @@ Para esas apps queda el último recurso: **cortarles internet por completo** (ab
 - **Eficiencia:** una sola conexión TLS 1.3 para todas las consultas (en paralelo, RFC 7766),
   abierta con la primera y cerrada tras 30 s sin uso: en reposo no hay sockets ni despertares. La
   primera consulta tras un reposo paga dos viajes de ida y vuelta extra (conexión TCP y TLS).
+- **Proveedor caído:** las conexiones a los proveedores se intentan escalonadas en paralelo
+  (RFC 8305: cada uno 250 ms después del anterior mientras este no conecta) y gana la primera
+  sesión TLS. Antes se probaban de uno en uno con 3 s por intento, más que los 2,5 s de
+  presupuesto de una consulta: con el primer proveedor descartando paquetes, la primera consulta
+  recibía SERVFAIL a los 2502 ms. Ahora la contesta el segundo (e2e en Linux: 298 ms). No medido
+  en la onn ni con proveedores reales.
 - **Reloj:** TLS necesita la fecha correcta y una TV sin pila de reloj la toma de la red. Si el DNS
   cifrado falla, `time.android.com`, `time.google.com` y `time.gstatic.com` se contestan en local
   con las IP fijas publicadas de Google Public NTP, para que la hora se pueda corregir.

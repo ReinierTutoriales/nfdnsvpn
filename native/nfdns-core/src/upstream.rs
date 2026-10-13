@@ -8,6 +8,8 @@
 //! One TLS connection carries every query (pipelined, RFC 7766), opened on the first query and
 //! closed after [`IDLE`] without any: a TV at rest keeps no socket and wakes nothing.
 
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, RootCertStore};
 use std::collections::HashMap;
@@ -29,6 +31,10 @@ const QUERY_TIMEOUT: Duration = Duration::from_millis(2500);
 const STALE_AFTER: Duration = Duration::from_millis(1800);
 /// TCP connect plus TLS handshake to one resolver.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+/// Head start of each resolver over the next one when connecting (RFC 8305's 250 ms): a resolver
+/// that drops packets delays the next by this much, not by a whole [`CONNECT_TIMEOUT`], so the
+/// alternative answers within the query's [`QUERY_TIMEOUT`].
+const CONNECT_STAGGER: Duration = Duration::from_millis(250);
 /// A TLS connection without queries for this long is closed.
 const IDLE: Duration = Duration::from_secs(30);
 /// Largest UDP answer read back: the biggest EDNS size clients ask for (resolvers keep to 1232
@@ -200,17 +206,28 @@ async fn run_session(servers: Arc<[DotServer]>, connector: TlsConnector, mut req
     }
 }
 
+/// Connects to the resolvers in order of preference, each started [`CONNECT_STAGGER`] after the
+/// previous one while those are still trying; the first TLS session established wins and the
+/// other attempts are dropped.
 async fn connect(servers: &[DotServer], connector: &TlsConnector, start: usize) -> Option<(TlsStream<TcpStream>, usize)> {
-    for offset in 0..servers.len() {
-        let index = (start + offset) % servers.len();
-        let server = &servers[index];
-        let attempt = async {
-            let tcp = TcpStream::connect(server.address).await.ok()?;
-            let _ = tcp.set_nodelay(true);
-            connector.connect(server.name.clone(), tcp).await.ok()
-        };
-        if let Ok(Some(stream)) = timeout(CONNECT_TIMEOUT, attempt).await {
-            return Some((stream, index));
+    let mut attempts: FuturesUnordered<_> = (0..servers.len())
+        .map(|offset| {
+            let index = (start + offset) % servers.len();
+            let server = &servers[index];
+            async move {
+                tokio::time::sleep(CONNECT_STAGGER * offset as u32).await;
+                let attempt = async {
+                    let tcp = TcpStream::connect(server.address).await.ok()?;
+                    let _ = tcp.set_nodelay(true);
+                    connector.connect(server.name.clone(), tcp).await.ok()
+                };
+                timeout(CONNECT_TIMEOUT, attempt).await.ok().flatten().map(|stream| (stream, index))
+            }
+        })
+        .collect();
+    while let Some(result) = attempts.next().await {
+        if result.is_some() {
+            return result;
         }
     }
     None

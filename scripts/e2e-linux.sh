@@ -232,7 +232,19 @@ def query(server, name):
     # An error answer (SERVFAIL, NXDOMAIN) shows its code, not bytes of the question.
     return socket.inet_ntoa(r[-4:]) if r[3] & 0x0F == 0 and r[7] else "rcode %d" % (r[3] & 0x0F)
 cmd = sys.argv[1]
-if cmd == "dns":
+if cmd == "dnstime":
+    # Answer and how long it took, waiting longer than the tunnel's budget so its limit shows.
+    start = time.monotonic()
+    try:
+        q = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+        q += b"".join(bytes([len(p)]) + p.encode() for p in sys.argv[3].split(".")) + b"\x00\x00\x01\x00\x01"
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(8)
+        s.sendto(q, (sys.argv[2], 53)); r, _ = s.recvfrom(2048)
+        answer = socket.inet_ntoa(r[-4:]) if r[3] & 0x0F == 0 and r[7] else "rcode%d" % (r[3] & 0x0F)
+    except OSError:
+        answer = "timeout"
+    print(answer, int((time.monotonic() - start) * 1000))
+elif cmd == "dns":
     print(query(sys.argv[2], sys.argv[3]))
 elif cmd == "many":
     # Opens N TCP connections to the echo server and keeps them all open: how many got through.
@@ -414,6 +426,15 @@ HANG=$!
 sleep 0.2
 check "DNS por TLS: conexión colgada sustituida sin perder consultas" "192.0.2.53" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 after-hang.example)"
 wait "$HANG" || true
+# First provider drops everything (192.0.2.250 has no owner on the server's network: no ARP
+# answer, its SYNs go unanswered), second one works: the first query must be answered by the
+# second within the budget, not lost while the first connection attempt times out.
+use_upstream "tls://192.0.2.250#dns.e2e,tls://192.0.2.1#dns.e2e"
+read -r first_down_answer first_down_ms < <(app "$PY" "$WORK/client.py" dnstime 10.111.0.1 first-down.example)
+echo "INFO primer proveedor caído: respuesta $first_down_answer en $first_down_ms ms"
+check "DNS por TLS: primer proveedor sin respuesta, contesta el segundo" "192.0.2.53" "$first_down_answer"
+# Within the query budget of the tunnel (QUERY_TIMEOUT, 2.5 s), not just "some answer".
+check "DNS por TLS: proveedor alternativo dentro del presupuesto de la consulta (< 2500 ms)" "1" "$(( first_down_ms < 2500 ? 1 : 0 ))"
 use_upstream "tls://192.0.2.1#otro.e2e"
 check "DNS por TLS: certificado de otro nombre rechazado (SERVFAIL)" "rcode 2" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 example.com 2>/dev/null || echo 'no answer')"
 use_upstream "tls://192.0.2.1:8853#dns.e2e"
