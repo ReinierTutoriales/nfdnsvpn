@@ -89,4 +89,20 @@ class RoutesTest {
         // Our own virtual resolvers, link-local and loopback are not the network's.
         assertEquals(network(), network(Routes.DNS_V4, Routes.DNS_V6, "fe80::1", "127.0.0.1"))
     }
+
+    @Test
+    fun aRouteThatFailsAbortsTheWholeInterface() {
+        val routes = Routes.forTunnel(true, network("192.168.1.1", ipv6 = true))
+        val added = mutableListOf<Cidr>()
+        Routes.install(routes) { added += it }
+        assertEquals("every route is installed when none fails", routes, added)
+
+        // Any route failing (here the IPv6 one, then the router's DNS) aborts: never a partial set.
+        for (failing in listOf(Routes.FULL_V6.first(), Cidr(InetAddress.getByName("192.168.1.1"), 32))) {
+            val error = runCatching {
+                Routes.install(routes) { if (it == failing) throw IllegalArgumentException("refused") }
+            }.exceptionOrNull()
+            assertTrue("$failing must abort", error is Routes.IncompleteRoutes && error.route == failing)
+        }
+    }
 }

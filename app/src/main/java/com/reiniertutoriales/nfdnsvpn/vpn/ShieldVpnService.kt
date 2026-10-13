@@ -329,10 +329,8 @@ class ShieldVpnService : VpnService() {
             .setConfigureIntent(
                 PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
             )
-        for (route in Routes.forTunnel(fullTunnel, network)) {
-            runCatching { builder.addRoute(route.address, route.prefix) }
-                .onFailure { Log.w(TAG, "Cannot route $route", it) }
-        }
+        // Throws before establish() if any route fails: no interface with missing routes.
+        Routes.install(Routes.forTunnel(fullTunnel, network)) { builder.addRoute(it.address, it.prefix) }
         // Our own list downloads, DNS forwarding and relay sockets must not loop back.
         builder.addDisallowedApplication(packageName)
         // A blocked or watched app must stay in the tunnel, or its rule could not apply.

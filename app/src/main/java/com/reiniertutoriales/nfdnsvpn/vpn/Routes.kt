@@ -45,6 +45,25 @@ object Routes {
 
     fun isVirtualAddress(address: InetAddress) = address in virtualAddresses
 
+    /** A route that could not be added: the interface would leave some traffic unfiltered. */
+    class IncompleteRoutes(val route: Cidr, cause: Throwable) : Exception("No se pudo enrutar $route: ${cause.message}", cause)
+
+    /**
+     * Adds every route through [add], or throws [IncompleteRoutes] at the first that fails. All of
+     * them are mandatory: each one either keeps DNS in the filter (virtual, public and network
+     * resolvers) or carries traffic that must be filtered. An interface missing one would show
+     * protection while letting part of the traffic out, so none is created.
+     */
+    fun install(routes: List<Cidr>, add: (Cidr) -> Unit) {
+        for (route in routes) {
+            try {
+                add(route)
+            } catch (e: RuntimeException) {
+                throw IncompleteRoutes(route, e)
+            }
+        }
+    }
+
     /**
      * Every route of the interface for this network: our virtual resolvers, the public ones, the
      * network's own resolvers (on the LAN, which the full tunnel leaves out: only those addresses
