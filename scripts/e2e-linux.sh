@@ -529,15 +529,16 @@ burst() {
     echo "$ok"
 }
 # Diagnosis of a burst: curl exit codes (7 refused, 28 timeout, 52 empty reply, 56 reset), the
-# owner-lookup counters of the tunnel (no match, timeout, queue full, drops) and server errors.
-owner_counters() { sleep 1.2; grep '^stats' "$WORK/tunnel.log" | tail -n 1 | cut -d' ' -f2 | cut -d, -f8-11; }
+# owner-lookup counters of the tunnel (no match, timeout, queue full, disconnected, drops) and
+# server errors.
+owner_counters() { sleep 1.2; grep '^stats' "$WORK/tunnel.log" | tail -n 1 | cut -d' ' -f2 | cut -d, -f8-12; }
 http_errors() { grep -ciE 'error|traceback|reset|broken' "$WORK/http.log" || true; }
 RSS_AFTER=()
 for round in 1 2 3 4 5; do
     owner_before=$(owner_counters); http_before=$(http_errors)
     check "Ráfaga $round: 50 conexiones en paralelo" "50" "$(burst)"
     owner_after=$(owner_counters)
-    echo "INFO ráfaga $round: salida de curl [$(cat "$WORK"/e* | sort | uniq -c | awk '{printf "%s×%s ", $2, $1}')]; dueño (sin coincidencia,tiempo,cola,descartes) $owner_before → $owner_after; errores del servidor HTTP +$(( $(http_errors) - http_before ))"
+    echo "INFO ráfaga $round: salida de curl [$(cat "$WORK"/e* | sort | uniq -c | awk '{printf "%s×%s ", $2, $1}')]; dueño (sin coincidencia,tiempo,cola,caída,descartes) $owner_before → $owner_after; errores del servidor HTTP +$(( $(http_errors) - http_before ))"
     rm -f "$WORK"/e*
     sleep 15   # closed connections stay in smoltcp's TIME-WAIT for about 10 s
     RSS_AFTER+=("$(awk '/VmRSS/ {print $2}' /proc/$TUNNEL_PID/status)")

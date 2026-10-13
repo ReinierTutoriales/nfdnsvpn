@@ -44,7 +44,7 @@ object NativeCore {
     @JvmStatic external fun nativeTunnelStop(tunnel: Long)
     /** The TUN descriptor for the next [nativeTunnelRun]; rules, filter and resolvers are kept. */
     @JvmStatic external fun nativeTunnelSetFd(tunnel: Long, fd: Int)
-    /** `queries,blocked,tcp,udp,quic_refused,dns_failed,flows_refused,owner_no_match,owner_timeout,owner_queue_full,owner_drops` followed by recently blocked names, one per line. */
+    /** `queries,blocked,tcp,udp,quic_refused,dns_failed,flows_refused,owner_no_match,owner_timeout,owner_queue_full,owner_disconnected,owner_drops` followed by recently blocked names, one per line. */
     @JvmStatic external fun nativeTunnelStats(tunnel: Long): String
     @JvmStatic external fun nativeTunnelFree(tunnel: Long)
 }
@@ -60,10 +60,14 @@ class TunnelStats(
     val dnsFailed: Long,
     /** New connections refused because the tunnel's limit (512 TCP, 256 UDP) was reached. */
     val flowsRefused: Long,
-    /** With app rules active: owners not found (no match, lookup timeout, lookup queue full). */
+    /**
+     * With app rules active: owners not found (no match, lookup timeout, lookup queue full, lookup
+     * thread gone), also before the lookup ever worked (those flows pass, not dropped).
+     */
     val ownerNoMatch: Long,
     val ownerTimeout: Long,
     val ownerQueueFull: Long,
+    val ownerDisconnected: Long,
     /** Connections dropped because their owner was not found (fail closed, not a block). */
     val ownerDrops: Long,
     val recent: List<String>,
@@ -72,10 +76,10 @@ class TunnelStats(
         fun parse(encoded: String): TunnelStats? {
             val lines = encoded.split('\n')
             val numbers = lines.first().split(',').mapNotNull(String::toLongOrNull)
-            if (numbers.size != 11) return null
+            if (numbers.size != 12) return null
             return TunnelStats(
                 numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5], numbers[6],
-                numbers[7], numbers[8], numbers[9], numbers[10], lines.drop(1).filter(String::isNotEmpty),
+                numbers[7], numbers[8], numbers[9], numbers[10], numbers[11], lines.drop(1).filter(String::isNotEmpty),
             )
         }
     }

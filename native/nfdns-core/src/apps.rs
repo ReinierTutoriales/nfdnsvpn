@@ -55,6 +55,9 @@ pub enum AppRule {
     /// Rules are active but the owner could not be found: treated as blocked, except for DNS,
     /// which the system resolver sends on behalf of every app and is filtered anyway.
     Unknown(Unknown),
+    /// The owner could not be found and the lookup has never found one on this device (broken or
+    /// unsupported): let through as [`AppRule::Normal`], but counted like [`AppRule::Unknown`].
+    Unverified(Unknown),
 }
 
 /// Why an owner could not be found (counted separately, to tell them apart when flows drop).
@@ -66,6 +69,8 @@ pub enum Unknown {
     Timeout,
     /// More new flows at once than the lookup queue holds.
     QueueFull,
+    /// The lookup thread is gone (its queue or the reply channel closed).
+    Disconnected,
 }
 
 /// Finds the Linux uid of the app that owns a connection; `None` if unknown.
@@ -147,19 +152,22 @@ impl AppGate {
         let owner = match lookups.try_send((protocol, local, remote, reply)) {
             Ok(()) => match timeout(LOOKUP_TIMEOUT, answer).await {
                 Ok(Ok(Some(uid))) => Ok(uid),
-                Ok(_) => Err(Unknown::NoOwner),
+                Ok(Ok(None)) => Err(Unknown::NoOwner),
+                // The reply was dropped unanswered: the lookup thread ended.
+                Ok(Err(_)) => Err(Unknown::Disconnected),
                 Err(_) => Err(Unknown::Timeout),
             },
-            // Full: more new flows at once than lookups can keep up with.
-            Err(_) => Err(Unknown::QueueFull),
+            // More new flows at once than lookups can keep up with.
+            Err(mpsc::TrySendError::Full(_)) => Err(Unknown::QueueFull),
+            Err(mpsc::TrySendError::Disconnected(_)) => Err(Unknown::Disconnected),
         };
         match owner {
             Ok(uid) if blocked.contains(&uid) => AppRule::Blocked,
             Ok(uid) if watched.contains(&uid) => AppRule::Watched(uid),
             Ok(_) => AppRule::Normal,
             Err(why) if self.proven.load(Ordering::Relaxed) => AppRule::Unknown(why),
-            // Never answered: a broken lookup must not cut every app off.
-            Err(_) => AppRule::Normal,
+            // Never answered: a broken lookup must not cut every app off (counted all the same).
+            Err(why) => AppRule::Unverified(why),
         }
     }
 
@@ -255,7 +263,63 @@ mod tests {
         let gate = AppGate::default();
         gate.set_blocked([10123]);
         gate.set_lookup(Never).unwrap();
-        assert_eq!(flow(&gate, 10123), AppRule::Normal);
+        // Let through, but reported with its reason (counted by the tunnel), not hidden.
+        assert_eq!(flow(&gate, 10123), AppRule::Unverified(Unknown::NoOwner));
+    }
+
+    /// Holds the lookup thread on its first request until `release` is dropped or sent to.
+    struct Held(std::sync::Mutex<mpsc::Receiver<()>>);
+
+    impl OwnerLookup for Held {
+        fn owner(&mut self, _: Protocol, _: SocketAddr, _: SocketAddr) -> Option<u32> {
+            let _ = self.0.lock().unwrap().recv();
+            Some(10200)
+        }
+    }
+
+    #[test]
+    fn a_full_queue_is_told_apart() {
+        let gate = AppGate::default();
+        gate.set_blocked([10123]);
+        let (release, held) = mpsc::channel();
+        gate.set_lookup(Held(std::sync::Mutex::new(held))).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let local = |port| SocketAddr::from(([10, 111, 0, 2], port));
+        let remote: SocketAddr = "192.0.2.1:443".parse().unwrap();
+        // The thread takes at most one request and blocks on it: of 300 at once, the queue holds
+        // 256, so at least 43 find it full, whatever the scheduling.
+        let rules = runtime.block_on(async {
+            let flows = (0..300).map(|i| gate.rule(Protocol::Tcp, local(20000 + i), remote));
+            let all = futures::future::join_all(flows);
+            let unblock = async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                drop(release);
+            };
+            futures::join!(all, unblock).0
+        });
+        let full = rules.iter().filter(|r| **r == AppRule::Unverified(Unknown::QueueFull)).count();
+        assert!(full >= 300 - LOOKUP_QUEUE - 1, "{full} reported a full queue");
+        assert!(!rules.contains(&AppRule::Unverified(Unknown::NoOwner)), "a full queue is not a missing owner");
+    }
+
+    struct Crashes;
+
+    impl OwnerLookup for Crashes {
+        fn owner(&mut self, _: Protocol, _: SocketAddr, _: SocketAddr) -> Option<u32> {
+            panic!("lookup thread ends");
+        }
+    }
+
+    #[test]
+    fn a_lookup_thread_that_ended_is_told_apart() {
+        let gate = AppGate::default();
+        gate.set_blocked([10123]);
+        gate.set_lookup(Crashes).unwrap();
+        // The reply is dropped unanswered, then the queue itself is closed: both are reported as
+        // disconnected, never as "no owner" or a timeout.
+        for port in [1000, 1001, 1002] {
+            assert_eq!(flow(&gate, port), AppRule::Unverified(Unknown::Disconnected), "port {port}");
+        }
     }
 
     struct Slow;
