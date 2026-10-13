@@ -6,7 +6,11 @@ import com.reiniertutoriales.nfdnsvpn.lists.ListStatus
 
 /** Live state of the VPN, written by [ShieldVpnService] and polled by the UI. */
 object ShieldState {
-    enum class Phase { STOPPED, STARTING, RUNNING }
+    /**
+     * DEGRADED: running, but the network changed and the interface could not be rebuilt; its
+     * routes may be stale, so full protection is not claimed while it retries.
+     */
+    enum class Phase { STOPPED, STARTING, RUNNING, DEGRADED }
 
     @Volatile var phase = Phase.STOPPED
     @Volatile var fullTunnel = false

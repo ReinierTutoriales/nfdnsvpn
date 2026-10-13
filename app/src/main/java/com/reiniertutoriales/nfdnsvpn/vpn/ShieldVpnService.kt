@@ -26,7 +26,6 @@ import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Local VPN. The packet loop runs in the Rust core ([NativeTunnel]) in both modes:
@@ -81,8 +80,8 @@ class ShieldVpnService : VpnService() {
 
     @Volatile private var stopping = false
     @Volatile private var tunnel: NativeTunnel? = null
-    /** The network changed since the interface was built: rebuild it with the latest state. */
-    private val rebuild = AtomicBoolean(false)
+    /** Keeps the interface matching the network while the tunnel runs (see [InterfaceLoop]). */
+    @Volatile private var interfaceLoop: InterfaceLoop? = null
     /** Daily list checks and filter rebuilds, one at a time, for the running tunnel. */
     @Volatile private var maintenance: ScheduledExecutorService? = null
     private var worker: Thread? = null
@@ -149,6 +148,7 @@ class ShieldVpnService : VpnService() {
 
     private fun shutdown() {
         stopping = true
+        interfaceLoop?.stop()
         tunnel?.stop()
         worker?.let { thread ->
             thread.interrupt()
@@ -200,15 +200,12 @@ class ShieldVpnService : VpnService() {
         try {
             filter = loadFilter()
             upstream = UpstreamDns(this, onPrivateDns = { ShieldState.privateDnsStrict = it }, onNetworkChanged = {
-                // The running loop returns, and the loop below rebuilds with the latest snapshot.
-                rebuild.set(true)
-                tunnel?.stop()
+                interfaceLoop?.networkChanged()
             })
             if (stopping) return
-            // A change from here on is caught: either this establish already sees it, or the
-            // callback sets the flag and the loop below rebuilds.
-            rebuild.set(false)
-            tun = establish(fullTunnel, upstream.snapshot) ?: throw IOException(getString(R.string.error_no_permission))
+            val built = upstream.snapshot
+            // A route that cannot be added throws here: no interface, the screen shows the error.
+            tun = establish(fullTunnel, built) ?: throw IOException(getString(R.string.error_no_permission))
             // Without "Block connections without VPN", traffic flows unfiltered whenever this
             // service is not running (crash, update, low memory kill): the screen warns about it.
             ShieldState.lockdown = Build.VERSION.SDK_INT < 29 || isLockdownEnabled
@@ -217,8 +214,6 @@ class ShieldVpnService : VpnService() {
             // Published before the first push, so a network change in between is not lost.
             tunnel = current
             ShieldState.tunnel = current
-            // Changed before the tunnel was published (its stop() had nothing to stop yet).
-            if (rebuild.get()) current.stop()
             applyDns(current)
             applyAppRules(current)
             if (stopping) return
@@ -226,22 +221,34 @@ class ShieldVpnService : VpnService() {
                 scheduleWithFixedDelay(::refreshDueLists, LIST_CHECK_HOURS, LIST_CHECK_HOURS, TimeUnit.HOURS)
             }
             maintenance = jobs
+            val port = object : TunnelPort {
+                override fun run() = current.run()
+                override fun stop() = current.stop()
+                override fun setFd(fd: Int) = current.setFd(fd)
+            }
+            val network = upstream
+            val scheduler = jobs
+            val loop = InterfaceLoop(
+                port,
+                establish = { establish(fullTunnel, network.snapshot)?.let(::PfdInterface) },
+                onHealth = { health, reason ->
+                    ShieldState.phase = if (health == InterfaceLoop.Health.PROTECTED) ShieldState.Phase.RUNNING else ShieldState.Phase.DEGRADED
+                    ShieldState.error = reason
+                    Log.i(TAG, "Interface health $health ${reason.orEmpty()}")
+                },
+                schedule = { delayMs, retry -> scheduler.schedule(retry, delayMs, TimeUnit.MILLISECONDS) },
+            )
+            interfaceLoop = loop
+            // A change between the snapshot used above and the loop existing.
+            if (network.snapshot != built) loop.networkChanged()
+            if (stopping) return
             ShieldState.phase = ShieldState.Phase.RUNNING
-            while (true) {
-                val failure = current.run()
-                if (stopping) break
-                if (!rebuild.getAndSet(false)) {
-                    if (failure.isNotEmpty()) throw IOException(failure)
-                    break
-                }
-                // Network change. The new interface is established before the old one is closed:
-                // Android moves the routes over in one step, so no packet goes out unfiltered in
-                // between. Then the same tunnel (filter, app rules, resolvers) reads the new one.
-                val next = establish(fullTunnel, upstream.snapshot) ?: throw IOException(getString(R.string.error_no_permission))
-                current.setFd(next.fd)
-                runCatching { tun?.close() }
-                tun = next
-                Log.i(TAG, "Interface rebuilt for the new network")
+            val outcome = loop.run(PfdInterface(tun))
+            tun = null // the loop closed every interface it held
+            when (outcome.end) {
+                InterfaceLoop.End.FAILED -> if (!stopping) throw IOException(outcome.message)
+                InterfaceLoop.End.REVOKED -> ShieldSettings.setWantRunning(this, false)
+                InterfaceLoop.End.STOPPED -> Unit
             }
         } catch (e: Exception) {
             if (!stopping) {
@@ -249,6 +256,7 @@ class ShieldVpnService : VpnService() {
                 ShieldState.error = e.message ?: e.javaClass.simpleName
             }
         } finally {
+            interfaceLoop = null
             maintenance = null
             ShieldState.tunnel = null
             jobs?.shutdownNow()
@@ -344,5 +352,14 @@ class ShieldVpnService : VpnService() {
         // VPNs are metered by default since Android 10, which makes streaming apps lower quality.
         if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
         return builder.establish()
+    }
+}
+
+/** A VpnService interface for [InterfaceLoop]. */
+private class PfdInterface(private val descriptor: ParcelFileDescriptor) : VpnInterface {
+    override val fd: Int get() = descriptor.fd
+
+    override fun close() {
+        runCatching { descriptor.close() }
     }
 }

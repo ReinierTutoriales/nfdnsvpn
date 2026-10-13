@@ -349,7 +349,7 @@ Para esas apps queda el último recurso: **cortarles internet por completo** (ab
   antes las rutas se calculaban una sola vez al arrancar. El DNS del router nuevo quedaba sin
   enrutar (una app que le preguntara directamente salía en claro) y, si aparecía IPv6, todo el
   tráfico IPv6 salía sin filtrar. Ahora el servicio compara el estado de la red (resolvedores e
-  IPv6) y, si cambia, establece la interfaz nueva con las rutas del estado más reciente **antes**
+  IPv6) y, si cambia, establece la interfaz nueva con las rutas de la red en ese momento **antes**
   de cerrar la anterior; el mismo túnel (filtro, reglas por app, DNS cifrado, contadores) sigue en
   ella. Nunca hay dos lecturas a la vez de una interfaz: una segunda ejecución se rechaza.
   - Probado en la JVM: rutas del router nuevo y no del viejo, IPv6 solo con red IPv6, modo ligero.
@@ -357,8 +357,19 @@ Para esas apps queda el último recurso: **cortarles internet por completo** (ab
     ninguna por el DNS en claro, que no recibió nada; el DNS del router nuevo queda interceptado
     y no recibe nada; reglas por app, SNI bloqueado y contadores siguen; solo queda abierta la
     interfaz nueva. IPv6 por la interfaz nueva, solo en el CI (el kernel local no tiene IPv6).
-  - **No probado en Android:** que `establish()` sustituya la interfaz sin hueco, y que los avisos
-    de Android lleguen en cambios reales Wi-Fi/Ethernet. Pendiente en la onn.
+  - **Rutas obligatorias:** todas lo son; si una no se puede añadir no se crea la interfaz
+    (`Routes.install`). En el arranque, error en pantalla en vez de «Protegiendo».
+  - **Reconstrucción fallida** (`InterfaceLoop`): se conserva la interfaz anterior (Android la
+    mantiene si no puede crear la nueva; cerrarla podría sacar tráfico del filtro), el estado pasa a
+    «Protección incompleta» (sus rutas pueden estar desactualizadas, no se anuncia protección) y se
+    reintenta 5 veces (1, 2, 4, 8 y 16 s); un cambio de red posterior también reintenta. Sin
+    permiso de VPN (revocado) el servicio termina; una parada durante la sustitución cierra la
+    interfaz nueva sin usarla. Cada reconstrucción usa la red del momento en que se establece; un
+    cambio durante ella provoca otra, así que el último cambio siempre acaba aplicado (puede
+    establecerse un estado intermedio unos instantes). Probado en la JVM con un túnel simulado.
+  - **No probado en Android:** que `establish()` sustituya la interfaz sin hueco, que conserve la
+    anterior al fallar y que los avisos lleguen en cambios reales Wi-Fi/Ethernet. Pendiente en la
+    onn.
   - Límite: los resolvedores link-local (fe80::…) no se enrutan (dirección con ámbito de interfaz); una app que les
     pregunte directamente no pasa por el filtro.
 - **Reloj:** TLS necesita la fecha correcta y una TV sin pila de reloj la toma de la red. Si el DNS

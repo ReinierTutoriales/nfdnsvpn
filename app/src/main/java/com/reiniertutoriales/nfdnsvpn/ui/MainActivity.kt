@@ -119,6 +119,7 @@ class MainActivity : ComponentActivity() {
                 ShieldState.Phase.STOPPED -> R.string.status_stopped
                 ShieldState.Phase.STARTING -> R.string.status_starting
                 ShieldState.Phase.RUNNING -> R.string.status_running
+                ShieldState.Phase.DEGRADED -> R.string.status_degraded
             }
         )
         val counters = ShieldState.stats()
@@ -133,6 +134,7 @@ class MainActivity : ComponentActivity() {
 
         // Only what stops the protection from working: there is nothing else to fix by hand.
         val problems = listOfNotNull(
+            getString(R.string.warning_degraded).takeIf { phase == ShieldState.Phase.DEGRADED },
             ShieldState.error?.let { getString(R.string.error_prefix, it) },
             ShieldState.privateDnsStrict?.let { getString(R.string.warning_private_dns, it) },
             getString(R.string.warning_dns_failing).takeIf { dnsFailing },

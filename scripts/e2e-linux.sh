@@ -482,7 +482,9 @@ check "Cambio de red: el túnel sigue en la interfaz nueva" "1" "$(grep -c '^swi
 # device itself outlives its descriptor; what matters is that the tunnel let go of it).
 check "Cambio de red: el túnel solo tiene abierta la interfaz nueva" "1" "$(find /proc/"$TUNNEL_PID"/fd -lname /dev/net/tun 2>/dev/null | wc -l)"
 tv ip link del tun0
-check "Cambio de red: ninguna respuesta del DNS en claro" "none" "$(grep -q '192.0.2.1=' "$WORK/transition.txt" && echo leaked || echo none)"
+# Every answer during the change from the encrypted resolver: no plain answer, no timeout, no
+# error, nothing unexpected (how many queries fit in the window does not matter).
+check "Cambio de red: todas las respuestas del DNS cifrado, sin errores" "only-encrypted" "$(grep -Eqx '192\.0\.2\.53=[1-9][0-9]*' "$WORK/transition.txt" && echo only-encrypted || echo "other: $(cat "$WORK/transition.txt")")"
 check "Cambio de red: el DNS en claro no recibió nada" "$plain_before" "$(cat "$WORK/plain-dns.count" 2>/dev/null || echo 0)"
 check "Cambio de red: DNS cifrado responde tras el cambio" "192.0.2.53" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 after-change.example)"
 check "Router nuevo: su DNS queda interceptado (contesta el cifrado)" "192.0.2.53" "$(app "$PY" "$WORK/client.py" dns 192.0.2.7 via-router.example)"
