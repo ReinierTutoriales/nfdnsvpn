@@ -23,6 +23,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.core.content.ContextCompat
+import androidx.core.view.isVisible
 import com.reiniertutoriales.nfdnsvpn.R
 import com.reiniertutoriales.nfdnsvpn.lists.ListRepository
 import com.reiniertutoriales.nfdnsvpn.vpn.DnsProviders
@@ -97,7 +98,7 @@ class SettingsActivity : ComponentActivity() {
         focus.remember(positionId(), key, focusableKeys(), scroll.scrollY)
     }
 
-    private fun focusableKeys() = controls.filterValues { it.isFocusable && it.visibility == View.VISIBLE }.keys.toList()
+    private fun focusableKeys() = controls.filterValues { it.isFocusable && it.isVisible }.keys.toList()
 
     private fun navigate(next: Page) {
         rememberPosition()
@@ -297,8 +298,8 @@ class SettingsActivity : ComponentActivity() {
 
     private fun showPending() {
         pendingNote?.setText(if (changes.requiresRestart) R.string.settings_pending_restart else R.string.settings_pending)
-        pendingNote?.visibility = if (changes.isPending) View.VISIBLE else View.GONE
-        applyButton?.visibility = if (changes.isPending) View.VISIBLE else View.GONE
+        pendingNote?.isVisible = changes.isPending
+        applyButton?.isVisible = changes.isPending
     }
 
     private fun applyChanges(notify: Boolean) {
