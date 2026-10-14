@@ -47,8 +47,11 @@ Lo que hacen ambos modos:
   reglas de dominio), quitar dominios permitidos, excluir apps que fallen, vigilar apps y bloquear los dominios que contactan, dejar apps sin internet, arranque al encender
   y estado/consumo.
 - Ligera: las listas se compilan leyendo los archivos línea a línea (pico de unos 17 MB al
-  compilar, 7 MB después) y nada se consulta en segundo plano mientras no miras la pantalla.
-- Las listas se actualizan solas una vez al día sin cortar las conexiones.
+  compilar, 7 MB después). Los contadores solo se consultan con la pantalla abierta.
+- Al arrancar, la VPN usa inmediatamente la lista incluida y las copias guardadas. Después de
+  establecer el túnel descarga las listas pendientes y aplica el filtro completo sin cortar las
+  conexiones. La primera instalación avisa mientras falten listas; las actualiza como máximo una
+  vez al día y comprueba si toca actualizarlas cada seis horas mientras la VPN esté activa.
 
 ## Instalar y usar
 

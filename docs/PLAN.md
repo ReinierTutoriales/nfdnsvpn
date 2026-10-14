@@ -537,3 +537,10 @@ hay un error y guarda sin añadir espacios, incluso en el límite de 1024 bytes.
 Estado se actualiza solo a petición; no se añade sondeo en segundo plano. Pruebas JVM cubren
 selección de foco, eliminación de filas, cambios combinados y serialización DNS en el límite.
 La navegación real, el foco de diálogos y la legibilidad siguen pendientes de comprobar en TV.
+
+El inicio del servicio compila las reglas incluidas y las listas ya guardadas sin esperar ninguna
+descarga. Establece el túnel y, si hay listas ausentes o vencidas, las actualiza en un único hilo
+de mantenimiento y sustituye el filtro sin cortar las conexiones. Una lista ausente aparece como
+aviso en la pantalla principal hasta que se complete; Estado muestra cuáles faltan y los errores
+de actualización. Con la VPN apagada no se ejecuta este mantenimiento. Una prueba JVM comprueba
+que las copias disponibles se usan aunque falten otras fuentes.

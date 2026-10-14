@@ -135,6 +135,8 @@ class MainActivity : ComponentActivity() {
         // Only what stops the protection from working: there is nothing else to fix by hand.
         val problems = listOfNotNull(
             if (phase == ShieldState.Phase.DEGRADED) getString(R.string.warning_degraded, ShieldState.degradedReason.orEmpty()) else null,
+            if (phase == ShieldState.Phase.RUNNING && ShieldState.lists.any { !it.available })
+                getString(R.string.warning_lists_missing) else null,
             ShieldState.error?.let { getString(R.string.error_prefix, it) },
             ShieldState.privateDnsStrict?.let { getString(R.string.warning_private_dns, it) },
             getString(R.string.warning_dns_failing).takeIf { dnsFailing },

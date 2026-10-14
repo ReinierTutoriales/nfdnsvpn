@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.core.content.edit
 import java.io.File
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -89,6 +90,26 @@ class ListRepository(private val context: Context) {
 
         fun selected(enabledIds: Set<String>) = ALL_LISTS.filter { it.id in enabledIds }
 
+        /** Files already available for protection, including partial multi-source lists. */
+        internal fun cachedLists(enabledIds: Set<String>, directory: File): LoadedLists {
+            val files = mutableListOf<File>()
+            val status = mutableListOf<ListStatus>()
+            for (list in selected(enabledIds)) {
+                var updatedAt = Long.MAX_VALUE
+                var available = false
+                for ((key, _) in list.sources()) {
+                    val file = File(directory, "$key.txt")
+                    if (file.exists()) {
+                        files += file
+                        available = true
+                        updatedAt = minOf(updatedAt, file.lastModified())
+                    }
+                }
+                status += ListStatus(list.name, available, if (available) updatedAt else 0L, null)
+            }
+            return LoadedLists(files, status)
+        }
+
         const val BUNDLED_ASSET = "video-ads.txt"
         private const val MAX_AGE_MS = 24 * 60 * 60 * 1000L
         private const val MAX_TEXT_CHARS = 16L * 1024 * 1024
@@ -115,7 +136,10 @@ class ListRepository(private val context: Context) {
 
     private fun isDue(key: String) = !file(key).exists() || System.currentTimeMillis() - prefs.getLong("$key.fetchedAt", 0L) > MAX_AGE_MS
 
-    /** Enabled lists, refreshed when due. */
+    /** Read only saved lists; startup must not wait for network requests before establishing VPN. */
+    fun loadCached(enabledIds: Set<String>): LoadedLists = cachedLists(enabledIds, dir)
+
+    /** Enabled lists, refreshed when due after the VPN interface has been established. */
     fun load(enabledIds: Set<String>): LoadedLists {
         val files = mutableListOf<File>()
         val status = mutableListOf<ListStatus>()
@@ -124,9 +148,12 @@ class ListRepository(private val context: Context) {
             var updatedAt = Long.MAX_VALUE
             var available = false
             for ((key, url) in list.sources()) {
+                if (Thread.currentThread().isInterrupted) throw InterruptedIOException("Actualización cancelada")
                 if (isDue(key)) {
                     try {
                         refresh(key, url, list)
+                    } catch (e: InterruptedIOException) {
+                        throw e
                     } catch (e: IOException) {
                         error = error ?: (e.message ?: e.javaClass.simpleName)
                     }
@@ -180,6 +207,7 @@ class ListRepository(private val context: Context) {
             connection.inputStream.bufferedReader().use { reader ->
                 partial.bufferedWriter().use { writer ->
                     while (true) {
+                        if (Thread.currentThread().isInterrupted) throw InterruptedIOException("Actualización cancelada")
                         val line = reader.readLine() ?: break
                         characters += line.length + 1
                         if (characters > MAX_TEXT_CHARS) throw IOException("Lista demasiado grande")

@@ -34,6 +34,7 @@
     <string name="settings_owner_unknown">Con reglas por app, descartadas por dueño no encontrado: %1$d. Dueño no encontrado: sin coincidencia %2$d · sin respuesta a tiempo %3$d · cola llena %4$d · búsqueda caída %5$d</string>
     <string name="settings_dns_failed">Consultas sin respuesta del servidor DNS: %1$d</string>
     <string name="warning_dns_failing">El servidor DNS elegido no responde: revísalo en Opciones › Servidor DNS.</string>
+    <string name="warning_lists_missing">Faltan listas de bloqueo. El filtro básico está activo; consulta Estado para ver cuáles están pendientes.</string>
     <string name="action_allow">Permitir un dominio bloqueado…</string>
     <string name="allow_title">¿Qué dominio quieres permitir?</string>
     <string name="allow_empty">Todavía no hay dominios bloqueados.</string>

@@ -21,6 +21,7 @@ import com.reiniertutoriales.nfdnsvpn.core.ConnectionOwner
 import com.reiniertutoriales.nfdnsvpn.core.NativeCore
 import com.reiniertutoriales.nfdnsvpn.core.NativeTunnel
 import com.reiniertutoriales.nfdnsvpn.lists.ListRepository
+import com.reiniertutoriales.nfdnsvpn.lists.LoadedLists
 import com.reiniertutoriales.nfdnsvpn.ui.MainActivity
 import java.io.IOException
 import java.util.concurrent.Executors
@@ -198,7 +199,9 @@ class ShieldVpnService : VpnService() {
         var current: NativeTunnel? = null
         var jobs: ScheduledExecutorService? = null
         try {
-            filter = loadFilter()
+            // Establish the VPN with bundled rules and saved lists before any network download.
+            val repository = ListRepository(this)
+            filter = buildFilter(repository, repository.loadCached(ShieldSettings.enabledLists(this)))
             upstream = UpstreamDns(this, onPrivateDns = { ShieldState.privateDnsStrict = it }, onNetworkChanged = {
                 interfaceLoop?.networkChanged()
             })
@@ -221,6 +224,8 @@ class ShieldVpnService : VpnService() {
                 scheduleWithFixedDelay(::refreshDueLists, LIST_CHECK_HOURS, LIST_CHECK_HOURS, TimeUnit.HOURS)
             }
             maintenance = jobs
+            // One bounded maintenance worker; nothing is scheduled if no list needs updating.
+            if (repository.isDue(ShieldSettings.enabledLists(this))) jobs.execute(::refreshDueLists)
             val port = object : TunnelPort {
                 override fun run() = current.run()
                 override fun stop() = current.stop()
@@ -281,7 +286,8 @@ class ShieldVpnService : VpnService() {
     /** Builds a filter from the current lists and settings and swaps it into the running tunnel. */
     private fun reloadFilter() {
         try {
-            val filter = loadFilter()
+            val repository = ListRepository(this)
+            val filter = buildFilter(repository, repository.load(ShieldSettings.enabledLists(this)))
             tunnel?.setFilter(filter) ?: NativeCore.nativeDestroy(filter)
         } catch (e: Exception) {
             Log.e(TAG, "Filter reload failed; the previous filter stays in use", e)
@@ -306,10 +312,7 @@ class ShieldVpnService : VpnService() {
     }
 
     /** Compiles the enabled lists straight from their files; returns a filter handle. */
-    private fun loadFilter(): Long {
-        val repository = ListRepository(this)
-        val lists = repository.load(ShieldSettings.enabledLists(this))
-        ShieldState.lists = lists.status
+    private fun buildFilter(repository: ListRepository, lists: LoadedLists): Long {
         val builder = NativeCore.nativeBuilderNew()
         try {
             NativeCore.nativeBuilderAddText(builder, repository.bundledRules())
@@ -324,6 +327,7 @@ class ShieldVpnService : VpnService() {
         }
         val handle = NativeCore.nativeBuilderBuild(builder)
         ShieldState.rules = NativeCore.nativeRuleCount(handle)
+        ShieldState.lists = lists.status
         return handle
     }
 
