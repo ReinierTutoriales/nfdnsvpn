@@ -224,7 +224,7 @@ class ShieldVpnService : VpnService() {
                 scheduleWithFixedDelay(::refreshDueLists, LIST_CHECK_HOURS, LIST_CHECK_HOURS, TimeUnit.HOURS)
             }
             maintenance = jobs
-            // One bounded maintenance worker; nothing is scheduled if no list needs updating.
+            // Start the first update only when due; the periodic check runs on the same worker.
             if (repository.isDue(ShieldSettings.enabledLists(this))) jobs.execute(::refreshDueLists)
             val port = object : TunnelPort {
                 override fun run() = current.run()
@@ -280,14 +280,18 @@ class ShieldVpnService : VpnService() {
     }
 
     private fun refreshDueLists() {
+        if (stopping) return
         if (ListRepository(this).isDue(ShieldSettings.enabledLists(this))) reloadFilter()
     }
 
     /** Builds a filter from the current lists and settings and swaps it into the running tunnel. */
     private fun reloadFilter() {
+        if (stopping) return
         try {
             val repository = ListRepository(this)
-            val filter = buildFilter(repository, repository.load(ShieldSettings.enabledLists(this)))
+            val lists = repository.load(ShieldSettings.enabledLists(this))
+            if (stopping || Thread.currentThread().isInterrupted) return
+            val filter = buildFilter(repository, lists)
             tunnel?.setFilter(filter) ?: NativeCore.nativeDestroy(filter)
         } catch (e: Exception) {
             Log.e(TAG, "Filter reload failed; the previous filter stays in use", e)
