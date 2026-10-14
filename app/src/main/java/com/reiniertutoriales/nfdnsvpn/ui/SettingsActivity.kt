@@ -25,6 +25,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import com.reiniertutoriales.nfdnsvpn.R
+import com.reiniertutoriales.nfdnsvpn.ui.SettingsNavigation.Page
 import com.reiniertutoriales.nfdnsvpn.lists.ListRepository
 import com.reiniertutoriales.nfdnsvpn.vpn.DnsProviders
 import com.reiniertutoriales.nfdnsvpn.vpn.ShieldSettings
@@ -34,14 +35,14 @@ import java.util.Date
 
 /** Small settings pages for the D-pad. Saved changes apply explicitly or when leaving the activity. */
 class SettingsActivity : ComponentActivity() {
-    private enum class Page { HOME, PROTECTION, APPS, APP, DOMAINS, DNS, STATUS }
 
     private lateinit var content: LinearLayout
     private lateinit var scroll: ScrollView
     private val controls = linkedMapOf<String, View>()
     private val focus = SettingsFocus()
     private val changes = SettingsChanges()
-    private var page = Page.HOME
+    private val navigation = SettingsNavigation()
+    private val page get() = navigation.current
     private var appPackage = ""
     private var appLabel = ""
     // Discover installed apps only on demand, once per activity, not on every DNS/domain edit.
@@ -51,7 +52,9 @@ class SettingsActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        page = savedInstanceState?.getString("page")?.let { value -> Page.entries.firstOrNull { it.name == value } } ?: Page.HOME
+        val restoredPage = savedInstanceState?.getString("page")?.let { value -> Page.entries.firstOrNull { it.name == value } } ?: Page.HOME
+        val history = savedInstanceState?.getStringArrayList("history").orEmpty().mapNotNull { value -> Page.entries.firstOrNull { it.name == value } }
+        navigation.restore(restoredPage, history)
         appPackage = savedInstanceState?.getString("appPackage").orEmpty()
         appLabel = savedInstanceState?.getString("appLabel").orEmpty()
         content = LinearLayout(this).apply {
@@ -65,11 +68,8 @@ class SettingsActivity : ComponentActivity() {
         setContentView(scroll)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                when (page) {
-                    Page.HOME -> finish()
-                    Page.APP -> navigate(Page.APPS)
-                    else -> navigate(Page.HOME)
-                }
+                rememberPosition()
+                if (navigation.back()) build(remember = false) else finish()
             }
         })
         build(remember = false)
@@ -77,6 +77,7 @@ class SettingsActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("page", page.name)
+        outState.putStringArrayList("history", ArrayList(navigation.history.map { it.name }))
         outState.putString("appPackage", appPackage)
         outState.putString("appLabel", appLabel)
         // onPause applies saved edits before this activity is recreated. Restoring its old
@@ -100,7 +101,7 @@ class SettingsActivity : ComponentActivity() {
 
     private fun navigate(next: Page) {
         rememberPosition()
-        page = next
+        navigation.open(next)
         build(remember = false)
     }
 
@@ -197,7 +198,7 @@ class SettingsActivity : ComponentActivity() {
                 rememberPosition()
                 appPackage = packageName
                 appLabel = label
-                page = Page.APP
+                navigation.open(Page.APP)
                 build(remember = false)
             }
         }

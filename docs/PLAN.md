@@ -528,7 +528,8 @@ mantiene la aplicación automática anterior. El aviso distingue cambios en cali
 reinician la protección y cortan conexiones. Un reinicio carga todos los ajustes pendientes;
 si la protección está apagada, editar no la activa.
 
-Cada sección conserva la fila enfocada y su desplazamiento al reconstruirse o volver de una
+Atrás vuelve al destino anterior, incluido Protección abierto desde una ficha de app; el menú
+raíz vuelve a la pantalla principal sin confirmación de salida. Cada sección conserva la fila enfocada y su desplazamiento al reconstruirse o volver de una
 ficha. Quitar una fila enfoca una vecina. Permitir/bloquear un dominio pide confirmación y
 explica que también afecta a subdominios y a otras apps. El editor DNS conserva el texto si
 hay un error y guarda sin añadir espacios, incluso en el límite de 1024 bytes.
