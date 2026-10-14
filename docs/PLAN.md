@@ -488,7 +488,7 @@ medida con la misma operación sin túnel) y `scripts/validate-lists.sh` (eficac
 | 500 conexiones abiertas a la vez | 500/500 responden |
 | TCP y UDP inactivos 130 s y reutilizados | Siguen funcionando |
 | Cambio de lista con una descarga de 200 MB en curso | 200 MB completos, sin corte |
-| 250 conexiones cortas en ráfagas | RAM estable, todas liberadas |
+| Conexiones cortas en ráfagas | E2E: 5 ráfagas de calentamiento y 5 medidas, 50 conexiones cada una; todas deben liberarse y cada muestra medida crecer menos de 1 MiB respecto a la base caliente |
 
 ### Eficiencia
 

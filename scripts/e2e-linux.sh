@@ -527,8 +527,10 @@ use_upstream "192.0.2.1"
 check "Vuelta al DNS de la red" "192.0.2.1" "$(app "$PY" "$WORK/client.py" dns 10.111.0.1 example.org)"
 check "HTTP bloqueado por Host" "blocked*" "$(out=$(app curl -s --max-time 5 -H 'Host: ads.doubleclick.net' http://192.0.2.1:8080/small); [[ -z "$out" ]] && echo blocked || echo "served: $out")"
 
-# Five bursts of 50 parallel connections: all must succeed, and memory must not keep growing
-# (a stuck connection would hold its stack and relay buffers). Measured after TIME-WAIT.
+# Five warm-up bursts, then five measured bursts of 50 parallel connections. RSS includes
+# allocator arenas and lazily committed pages: comparing cold samples can mistake a one-time
+# allocation for a leak. Keep the same 1 MiB growth limit after warm-up, and check that every
+# round releases its TCP flows after TIME-WAIT.
 burst() {
     local ok=0 clients=()
     for i in $(seq 1 50); do
@@ -544,17 +546,26 @@ burst() {
 owner_counters() { sleep 1.2; grep '^stats' "$WORK/tunnel.log" | tail -n 1 | cut -d' ' -f2 | cut -d, -f8-12; }
 http_errors() { grep -ciE 'error|traceback|reset|broken' "$WORK/http.log" || true; }
 RSS_AFTER=()
-for round in 1 2 3 4 5; do
+rss_baseline=0
+for round in $(seq 1 10); do
     owner_before=$(owner_counters); http_before=$(http_errors)
     check "Ráfaga $round: 50 conexiones en paralelo" "50" "$(burst)"
     owner_after=$(owner_counters)
     echo "INFO ráfaga $round: salida de curl [$(cat "$WORK"/e* | sort | uniq -c | awk '{printf "%s×%s ", $2, $1}')]; dueño (sin coincidencia,tiempo,cola,caída,descartes) $owner_before → $owner_after; errores del servidor HTTP +$(( $(http_errors) - http_before ))"
     rm -f "$WORK"/e*
     sleep 15   # closed connections stay in smoltcp's TIME-WAIT for about 10 s
-    RSS_AFTER+=("$(awk '/VmRSS/ {print $2}' /proc/$TUNNEL_PID/status)")
+    active=$(grep '^stats' "$WORK/tunnel.log" | tail -n 1 | cut -d, -f3)
+    check "Ráfaga $round: conexiones TCP liberadas" "0" "$active"
+    rss_sample=$(awk '/VmRSS/ {print $2}' /proc/$TUNNEL_PID/status)
+    if (( round <= 5 )); then
+        echo "INFO calentamiento $round: RSS $rss_sample KB"
+        rss_baseline=$rss_sample
+    else
+        RSS_AFTER+=("$rss_sample")
+        check "Ráfaga $round: crecimiento de RAM tras calentamiento (< 1 MB)" "1" "$(( rss_sample - rss_baseline < 1024 ? 1 : 0 ))"
+    fi
 done
-echo "INFO RSS tras cada ráfaga (KB): ${RSS_AFTER[*]}"
-check "RAM estable entre la ráfaga 2 y la 5 (< 1 MB)" "1" "$(( ${RSS_AFTER[4]} - ${RSS_AFTER[1]} < 1024 ? 1 : 0 ))"
+echo "INFO RSS base tras calentamiento (KB): $rss_baseline; cinco muestras medidas: ${RSS_AFTER[*]}"
 
 # Throughput and cost of a 200 MB download.
 cpu_before=$(awk '{print $14 + $15}' /proc/$TUNNEL_PID/stat)
