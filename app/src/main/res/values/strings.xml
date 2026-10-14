@@ -22,7 +22,7 @@
     <string name="dns_chosen">✓ %1$s</string>
     <string name="dns_custom_title">DNS personalizado (cifrado)</string>
     <string name="dns_custom_hint">Formato tls://IP[:puerto]#nombre del certificado, IPv6 entre corchetes, separados por comas (máximo: %1$d). Ejemplo: tls://9.9.9.9#dns.quad9.net</string>
-    <string name="dns_invalid_too_long">Texto demasiado largo. Máximo: %1$d bytes UTF-8</string>
+    <string name="dns_invalid_too_long">Texto demasiado largo. Límite en bytes UTF-8: %1$d</string>
     <string name="dns_invalid_empty">Escribe al menos un servidor: tls://IP#nombre</string>
     <string name="dns_invalid_too_many">Demasiados servidores. Máximo: %1$d</string>
     <string name="dns_invalid_format">Servidor n.º %1$d: el formato es tls://IP[:puerto]#nombre</string>
