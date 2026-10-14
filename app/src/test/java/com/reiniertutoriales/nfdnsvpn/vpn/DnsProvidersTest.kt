@@ -9,6 +9,26 @@ import org.junit.Test
 
 class DnsProvidersTest {
     @Test
+    fun aListAtTheByteLimitStaysValidWhenSaved() {
+        fun name(length: Int): String {
+            val parts = mutableListOf<String>()
+            var remaining = length
+            while (remaining > 63) {
+                parts += "a".repeat(63)
+                remaining -= 64
+            }
+            parts += "a".repeat(remaining)
+            return parts.joinToString(".")
+        }
+        val entries = listOf(240, 240, 240, 245).mapIndexed { i, length -> "tls://1.1.1.${i + 1}#${name(length)}" }
+        val input = entries.joinToString(",")
+        assertEquals(DnsProviders.MAX_LENGTH, input.toByteArray().size)
+        val valid = DnsProviders.validate(input) as Validation.Valid
+        assertEquals(input, valid.encoded)
+        assertEquals(valid, DnsProviders.validate(valid.encoded))
+    }
+
+    @Test
     fun everyProviderIsEncryptedAndWithinTheLimits() {
         for (provider in DnsProviders.ALL) {
             val list = provider.servers.joinToString(",")

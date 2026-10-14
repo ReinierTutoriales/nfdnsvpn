@@ -515,3 +515,24 @@ AdGuard DNS + HaGeZi Ultimate + native + DNS cifrado: unos 340 000 dominios y 34
 
 CPU por GB y memoria reales en su procesador, latencia con la red Wi-Fi real y la fluidez del 4K.
 La pantalla de Opciones muestra RAM y CPU de la app para anotarlas.
+
+## Ajustes para el mando
+
+Opciones se divide en Protección, Aplicaciones, Dominios y listas, Servidor DNS y Estado.
+Las aplicaciones se descubren al entrar en su sección y se muestran una sola vez; cada ficha
+conserva exclusión, bloqueo y vigilancia sin cambiar su prioridad en el motor. Las reglas por
+app se deshabilitan visualmente en modo ligero, sin borrar las elecciones guardadas.
+
+Los cambios se guardan al elegirlos. «Aplicar cambios» los envía al servicio; salir de Opciones
+mantiene la aplicación automática anterior. El aviso distingue cambios en caliente de los que
+reinician la protección y cortan conexiones. Un reinicio carga todos los ajustes pendientes;
+si la protección está apagada, editar no la activa.
+
+Cada sección conserva la fila enfocada y su desplazamiento al reconstruirse o volver de una
+ficha. Quitar una fila enfoca una vecina. Permitir/bloquear un dominio pide confirmación y
+explica que también afecta a subdominios y a otras apps. El editor DNS conserva el texto si
+hay un error y guarda sin añadir espacios, incluso en el límite de 1024 bytes.
+
+Estado se actualiza solo a petición; no se añade sondeo en segundo plano. Pruebas JVM cubren
+selección de foco, eliminación de filas, cambios combinados y serialización DNS en el límite.
+La navegación real, el foco de diálogos y la legibilidad siguen pendientes de comprobar en TV.

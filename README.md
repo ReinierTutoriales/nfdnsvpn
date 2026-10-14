@@ -108,3 +108,10 @@ cargo run --release --example measure -- lista1.txt lista2.txt
 | `app/src/main/java/.../lists` | Descarga y caché de listas |
 | `app/src/main/java/.../ui` | Pantalla de un botón y Opciones, para el mando |
 | `app/src/main/assets/video-ads.txt` | Lista propia de servidores de anuncios de vídeo |
+
+### Encontrar los ajustes
+
+En **Opciones** hay cinco secciones: **Protección**, **Aplicaciones**, **Dominios y listas**,
+**Servidor DNS** y **Estado**. Elige una app para abrir su ficha; no hace falta recorrer tres
+listas de aplicaciones. Usa ↑/↓, OK y Atrás. Los cambios quedan guardados; pulsa **Aplicar
+cambios** o sal de Opciones para enviarlos al servicio. El aviso indica si reiniciarán la VPN.

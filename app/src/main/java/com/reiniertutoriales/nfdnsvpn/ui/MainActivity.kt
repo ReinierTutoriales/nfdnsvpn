@@ -118,7 +118,7 @@ class MainActivity : ComponentActivity() {
             when (phase) {
                 ShieldState.Phase.STOPPED -> R.string.status_stopped
                 ShieldState.Phase.STARTING -> R.string.status_starting
-                ShieldState.Phase.RUNNING -> R.string.status_running
+                ShieldState.Phase.RUNNING -> if (ShieldState.fullTunnel) R.string.status_running_full else R.string.status_running_light
                 ShieldState.Phase.DEGRADED -> R.string.status_degraded
             }
         )

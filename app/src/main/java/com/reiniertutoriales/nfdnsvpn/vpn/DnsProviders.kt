@@ -39,7 +39,10 @@ object DnsProviders {
 
     sealed interface Validation {
         /** The entries as they will be used and shown: trimmed, empty ones left out. */
-        data class Valid(val servers: List<String>) : Validation
+        data class Valid(val servers: List<String>) : Validation {
+            /** Do not add whitespace after validation: a list at the byte limit must stay valid. */
+            val encoded: String get() = servers.joinToString(",")
+        }
 
         /** [entry]: position of the first bad entry, from 1; 0 when the list as a whole is refused. */
         data class Invalid(val reason: Reason, val entry: Int = 0) : Validation

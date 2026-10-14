@@ -1,69 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Minimal screen: one big switch, its state and the block count. Options stay out of the way.
-     Fits a 1080p TV (960 x 540 dp) with a three-line warning shown. -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:gravity="center"
-    android:orientation="vertical"
-    android:paddingHorizontal="48dp"
-    android:paddingVertical="27dp">
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/app_name"
-        android:textColor="@color/text_secondary"
-        android:textSize="20sp" />
-
-    <Button
-        android:id="@+id/toggle"
-        android:layout_width="200dp"
-        android:layout_height="200dp"
-        android:layout_marginTop="16dp"
-        android:background="@drawable/power_button"
-        android:textAllCaps="false"
-        android:textColor="@color/power_text"
-        android:textSize="26sp"
-        android:textStyle="bold" />
-
-    <TextView
-        android:id="@+id/status"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:textColor="@color/text_primary"
-        android:textSize="22sp" />
-
-    <TextView
-        android:id="@+id/stats"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:textColor="@color/text_secondary"
-        android:textSize="16sp" />
-
-    <TextView
-        android:id="@+id/warning"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:gravity="center"
-        android:maxWidth="720dp"
-        android:textColor="@color/warning"
-        android:textSize="15sp"
-        android:visibility="gone" />
-
-    <Button
-        android:id="@+id/options"
-        style="?android:attr/borderlessButtonStyle"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:background="@drawable/link_button"
-        android:paddingHorizontal="20dp"
-        android:text="@string/action_options"
-        android:textAllCaps="false"
-        android:textColor="@color/text_secondary"
-        android:textSize="14sp" />
-</LinearLayout>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:orientation="vertical" android:paddingHorizontal="48dp" android:paddingVertical="27dp">
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/app_name" android:textColor="@color/text_secondary" android:textSize="20sp" />
+        <Button android:id="@+id/toggle" android:layout_width="200dp" android:layout_height="200dp" android:layout_marginTop="16dp" android:background="@drawable/power_button" android:textAllCaps="false" android:textColor="@color/power_text" android:textSize="26sp" android:textStyle="bold" />
+        <TextView android:id="@+id/status" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textColor="@color/text_primary" android:textSize="22sp" />
+        <TextView android:id="@+id/stats" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textColor="@color/text_secondary" android:textSize="16sp" />
+        <TextView android:id="@+id/warning" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:gravity="center" android:maxWidth="720dp" android:textColor="@color/warning" android:textSize="15sp" android:visibility="gone" />
+        <Button android:id="@+id/options" style="?android:attr/borderlessButtonStyle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:background="@drawable/link_button" android:paddingHorizontal="20dp" android:text="@string/action_options" android:textAllCaps="false" android:textColor="@color/text_secondary" android:textSize="18sp" android:minHeight="56dp" />
+    </LinearLayout>
+</ScrollView>

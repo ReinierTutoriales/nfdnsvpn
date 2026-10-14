@@ -1,13 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">NF DNS VPN</string>
-
-    <!-- Main screen -->
-    <string name="power_on">ACTIVADO</string>
+    <string name="power_on">DESACTIVAR</string>
     <string name="power_off">ACTIVAR</string>
     <string name="status_stopped">Sin protección</string>
     <string name="status_starting">Activando…</string>
-    <string name="status_running">Protegiendo todas las apps</string>
     <string name="status_degraded">Protección incompleta</string>
     <string name="warning_degraded">Parte del tráfico podría no pasar por el filtro hasta que se actualicen las rutas (%1$s). Si dura, desactiva y activa la protección.</string>
     <string name="blocked_count">%1$s bloqueados</string>
@@ -15,20 +12,17 @@
     <string name="error_prefix">Error: %1$s</string>
     <string name="error_no_permission">No se concedió el permiso de VPN</string>
     <string name="warning_private_dns">El DNS privado de Android está en modo estricto (%1$s) y se salta el filtro: ponlo en «Automático» o «Desactivado» en Ajustes › Red e Internet › DNS privado.</string>
-
-    <!-- Options -->
     <string name="settings_title">Opciones</string>
-    <string name="settings_intro">No hace falta cambiar nada: todo funciona con lo que viene por defecto.</string>
+    <string name="settings_intro">La protección funciona con los ajustes predeterminados. Entra en una sección para revisar o cambiar sus opciones.</string>
     <string name="settings_protection">Protección</string>
-    <string name="settings_full_mode">Modo completo: todo el tráfico pasa por el filtro (recomendado)</string>
-    <string name="settings_full_mode_note">Desactivado, solo se filtra el DNS: consume menos, pero una app con DNS propio podría saltárselo.</string>
+    <string name="settings_full_mode">Modo completo (recomendado)</string>
+    <string name="settings_full_mode_note">Filtra conexiones y DNS, salvo la red local y las apps excluidas. En modo ligero solo se filtra DNS; las apps con resolvedores propios pueden evitarlo.</string>
     <string name="settings_dns">Servidor DNS</string>
-    <string name="settings_dns_note">El filtro está en la TV: lo bloqueado nunca sale. Lo permitido se pregunta siempre cifrado (DNS sobre TLS) a quien elijas aquí; el router y la operadora no lo ven ni pueden cambiarlo, y nunca se usan como DNS. Si el elegido no responde, no se usa otro en claro. Cualquier otro DNS que intente una app se bloquea o se desvía a este.</string>
-    <string name="dns_custom">Personalizado: %1$s</string>
+    <string name="settings_dns_note">Las consultas permitidas del filtro se envían cifradas al proveedor elegido. Si falla, no se vuelve al DNS en claro. Esto no garantiza bloquear cualquier DNS oculto dentro del tráfico de una app.</string>
     <string name="dns_chosen">✓ %1$s</string>
     <string name="dns_custom_title">DNS personalizado (cifrado)</string>
     <string name="dns_custom_hint">Formato tls://IP[:puerto]#nombre del certificado, IPv6 entre corchetes, separados por comas (máximo: %1$d). Ejemplo: tls://9.9.9.9#dns.quad9.net</string>
-    <string name="dns_invalid_too_long">Texto demasiado largo. Máximo de caracteres: %1$d</string>
+    <string name="dns_invalid_too_long">Texto demasiado largo. Máximo: %1$d bytes UTF-8</string>
     <string name="dns_invalid_empty">Escribe al menos un servidor: tls://IP#nombre</string>
     <string name="dns_invalid_too_many">Demasiados servidores. Máximo: %1$d</string>
     <string name="dns_invalid_format">Servidor n.º %1$d: el formato es tls://IP[:puerto]#nombre</string>
@@ -39,32 +33,26 @@
     <string name="settings_flows_refused">Conexiones rechazadas por el tope de seguridad (512 TCP, 256 UDP): %1$d</string>
     <string name="settings_owner_unknown">Con reglas por app, descartadas por dueño no encontrado: %1$d. Dueño no encontrado: sin coincidencia %2$d · sin respuesta a tiempo %3$d · cola llena %4$d · búsqueda caída %5$d</string>
     <string name="settings_dns_failed">Consultas sin respuesta del servidor DNS: %1$d</string>
-    <string name="warning_dns_failing">El servidor DNS elegido no responde: cámbialo en Opciones › Servidor DNS.</string>
+    <string name="warning_dns_failing">El servidor DNS elegido no responde: revísalo en Opciones › Servidor DNS.</string>
     <string name="action_allow">Permitir un dominio bloqueado…</string>
     <string name="allow_title">¿Qué dominio quieres permitir?</string>
-    <string name="allow_hint">Se permitirá también en sus subdominios. Puedes quitarlo aquí mismo.</string>
     <string name="allow_empty">Todavía no hay dominios bloqueados.</string>
-    <string name="settings_lockdown_note">Opcional: Android no deja que una app active por sí misma «Bloquear conexiones sin VPN». Con él, nada sale sin filtrar en los segundos en que la protección se reinicia (las apps excluidas se quedarían sin red).</string>
+    <string name="settings_lockdown_note">Android ofrece «Bloquear conexiones sin VPN» para impedir tráfico directo cuando la VPN se detiene. Actívalo en los ajustes del sistema si está disponible; las apps excluidas pueden quedarse sin red. No elimina las limitaciones del filtro.</string>
     <string name="settings_lockdown_open">Abrir los ajustes de VPN de Android</string>
     <string name="settings_lists">Listas de bloqueo</string>
     <string name="settings_lists_note">Se actualizan solas una vez al día. La lista propia de anuncios de vídeo siempre está activa.</string>
-    <string name="settings_startup">Inicio</string>
     <string name="settings_start_on_boot">Activar la protección al encender la TV (si estaba activa)</string>
     <string name="settings_allowed">Dominios permitidos</string>
     <string name="settings_allowed_empty">Ninguno.</string>
     <string name="settings_allowed_remove">Quitar %1$s</string>
-    <string name="settings_excluded">Apps excluidas de la VPN</string>
     <string name="settings_excluded_note">Su tráfico no pasa por el filtro. Úsalo solo para apps que dejen de funcionar con la protección.</string>
-    <string name="settings_blocked">Apps sin internet</string>
-    <string name="settings_blocked_note">La app marcada no puede conectarse a nada (anuncios, telemetría ni su propio contenido), aunque deje de funcionar. Necesita el modo completo. Si también está excluida, el bloqueo manda.</string>
-    <string name="settings_watched">Apps vigiladas</string>
-    <string name="settings_watched_note">Para las apps que quieres usar pero no se fían: solo pueden conectarse a servidores con un nombre que se pueda leer y esté permitido, o a direcciones que haya dado nuestro DNS. Se les cortan las IP fijas, su propio DNS y lo que no muestre nombre. Abajo ves a dónde se conectan y puedes bloquear lo que sobre. Necesita el modo completo.</string>
+    <string name="settings_blocked_note">Bloquea las conexiones nuevas de esta app en modo completo. Su contenido puede dejar de funcionar; las conexiones ya abiertas pueden continuar. Si Android no logra identificar al dueño, el bloqueo puede ser incompleto.</string>
+    <string name="settings_watched_note">Restringe destinos sin nombre legible o sin una dirección obtenida por nuestro DNS. Puede romper juegos o conexiones directas. Necesita modo completo y atribución de Android; no separa telemetría que comparte servidor con el contenido.</string>
     <string name="watched_activity">A dónde se conecta %1$s</string>
     <string name="watched_activity_empty">Todavía no hay conexiones. Usa la app un rato y vuelve.</string>
-    <string name="watched_allowed">%1$s · pulsar para bloquear</string>
-    <string name="watched_refused">✕ %1$s · cortado (pulsar para permitir)</string>
-    <string name="watched_address_hint">Dirección sin nombre: el modo vigilado ya la corta.</string>
-    <string name="watched_blocked_hint">%1$s bloqueado en todas las apps. Puedes quitarlo en «Dominios bloqueados por ti».</string>
+    <string name="watched_allowed">%1$s · permitido</string>
+    <string name="watched_refused">%1$s · rechazado</string>
+    <string name="watched_address_hint">Dirección sin nombre: esta pantalla no cambia reglas por IP.</string>
     <string name="settings_blocked_domains">Dominios bloqueados por ti</string>
     <string name="settings_blocked_domains_remove">Quitar %1$s</string>
     <string name="settings_status">Estado</string>
@@ -73,8 +61,35 @@
     <string name="usage">Consumo de la app: %1$d MB de RAM · %2$d s de CPU</string>
     <string name="list_missing">sin descargar</string>
     <string name="list_update_failed">no se pudo actualizar (%1$s)</string>
-
-    <!-- Notification -->
     <string name="notification_channel">Protección activa</string>
-    <string name="notification_text">Bloqueando anuncios y rastreadores en todas las apps</string>
+    <string name="notification_text">Filtrando conexiones según el modo y las reglas seleccionados</string>
+    <string name="settings_apps">Aplicaciones</string>
+    <string name="settings_domains">Dominios y listas</string>
+    <string name="settings_navigation">↑ / ↓ para elegir · OK para abrir · Atrás para volver</string>
+    <string name="settings_apps_note">Elige una app para revisar sus reglas. Bloqueo y vigilancia tienen prioridad sobre la exclusión.</string>
+    <string name="settings_apps_empty">No se encontraron aplicaciones con icono de inicio.</string>
+    <string name="settings_app_filtered">Reglas normales</string>
+    <string name="settings_app_excluded">Excluir del filtro</string>
+    <string name="settings_app_blocked">Bloquear conexiones nuevas</string>
+    <string name="settings_app_watched">Vigilar destinos</string>
+    <string name="settings_app_requires_android">El bloqueo y la vigilancia por app requieren Android 10 o posterior.</string>
+    <string name="settings_app_requires_full">Activa el modo completo para usar bloqueo o vigilancia por app. Las reglas guardadas se conservan.</string>
+    <string name="settings_app_priority">Prioridad: bloqueo, vigilancia y exclusión. Una app bloqueada o vigilada sigue dentro de la VPN aunque esté marcada como excluida.</string>
+    <string name="settings_light_confirm">El modo ligero consume menos, pero permite que algunas apps eviten el DNS filtrado. Las reglas de bloqueo y vigilancia no controlarán su tráfico. ¿Cambiar de modo?</string>
+    <string name="settings_remove_domain_confirm">¿Quitar la regla de %1$s? La decisión volverá a depender de las demás reglas y listas.</string>
+    <string name="settings_allow_confirm">¿Permitir %1$s y sus subdominios en todas las apps? Esta excepción puede permitir también anuncios o telemetría de ese dominio.</string>
+    <string name="settings_block_confirm">¿Bloquear %1$s y sus subdominios en todas las apps? Puede impedir funciones que dependan de ese dominio.</string>
+    <string name="settings_confirm">Confirmar cambio</string>
+    <string name="settings_refresh">Actualizar diagnóstico</string>
+    <string name="settings_apply">Aplicar cambios</string>
+    <string name="settings_pending">Cambios guardados pendientes de aplicar. Se aplican al pulsar el botón o al salir de Opciones.</string>
+    <string name="settings_pending_restart">Cambios guardados pendientes de aplicar. Requieren reiniciar la protección y cortar las conexiones abiertas.</string>
+    <string name="settings_applied">Cambios enviados al servicio. Si la protección está apagada, se cargarán al activarla.</string>
+    <string name="settings_apply_failed">No se pudieron aplicar los cambios guardados. Inténtalo otra vez o vuelve a activar la protección.</string>
+    <string name="settings_vpn_unavailable">Esta TV no ofrece la pantalla de ajustes de VPN.</string>
+    <string name="status_running_full">Protección activa · modo completo</string>
+    <string name="status_running_light">Protección activa · solo DNS</string>
+    <string name="dns_custom_option">DNS personalizado</string>
+    <string name="settings_app_row">%1$s · %2$s</string>
+    <string name="settings_app_inactive">Reglas guardadas · modo ligero</string>
 </resources>
