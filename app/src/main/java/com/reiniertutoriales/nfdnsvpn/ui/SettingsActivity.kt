@@ -54,9 +54,6 @@ class SettingsActivity : ComponentActivity() {
         page = savedInstanceState?.getString("page")?.let { value -> Page.entries.firstOrNull { it.name == value } } ?: Page.HOME
         appPackage = savedInstanceState?.getString("appPackage").orEmpty()
         appLabel = savedInstanceState?.getString("appLabel").orEmpty()
-        savedInstanceState?.getStringArrayList("changes")?.forEach { name ->
-            SettingsChanges.Change.entries.firstOrNull { it.name == name }?.let(changes::add)
-        }
         content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(48), dp(27), dp(48), dp(27))
@@ -82,7 +79,8 @@ class SettingsActivity : ComponentActivity() {
         outState.putString("page", page.name)
         outState.putString("appPackage", appPackage)
         outState.putString("appLabel", appLabel)
-        outState.putStringArrayList("changes", ArrayList(changes.actions(running = true).map { it.name }))
+        // onPause applies saved edits before this activity is recreated. Restoring its old
+        // pending actions here would dispatch a second restart when the new screen is left.
         super.onSaveInstanceState(outState)
     }
 
