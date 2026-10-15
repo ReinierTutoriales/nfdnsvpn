@@ -1,3 +1,5 @@
+@AGENTS.md
+
 # CLAUDE.md
 
 Reglas de trabajo para cualquier agente (Claude u otro) que opere en este repositorio.
@@ -79,3 +81,4 @@ Obligatorias para todo cambio. El CI las comprueba y un fallo bloquea el cambio.
 - No inventar contenido: usar solo datos que el usuario haya dado o que existan en
   el repositorio.
 - Probar los cambios antes de publicarlos e informar del resultado real.
+- Preferir skills de `.agents/skills/` (especialmente `precise-coding`) cuando apliquen.
