@@ -11,3 +11,5 @@ description: Use when considering or implementing performance changes on the pac
 - Measure before claiming improvement (`cargo run --release --example measure`, `--bench`, or e2e).
 - Do not trade correctness of DNS forcing, SNI/QUIC blocking, or fail-safe behavior for speed.
 - Prefer changes justified by real measurements on TV hardware or representative benches.
+- Do not write speculative optimizations. Verify against existing code and tests first.
+- Follow agent-governance rules on branches and authorship.
