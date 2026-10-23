@@ -11,5 +11,8 @@ description: Use when optimizing, cleaning, or reviewing code. Prioritizes simpl
 - Every queue, cache, or buffer must have a hard limit.
 - If a superior alternative exists, choose the most production-solid one; state what improved and why.
 - Do not break mode correctness, DNS forcing, or fail-safe behavior.
-- Verify against existing tests.
+- Keep changes focused and measurable. Do not write for the sake of writing.
+- Verify against existing tests and contracts before considering the change complete.
+- Update documentation only when it reflects verified current behavior.
 - Note any remaining need for real Android TV validation.
+- Follow agent-governance rules on branches and authorship.
