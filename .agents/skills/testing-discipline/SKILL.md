@@ -14,3 +14,4 @@ description: Use when adding features or changing logic. Enforces required tests
 - Do not relax or weaken existing tests.
 - A change is incomplete until consistent with the test baseline and CI expectations.
 - Explicitly call out gaps that need real Android TV device validation.
+- Follow agent-governance rules on branches and authorship.
