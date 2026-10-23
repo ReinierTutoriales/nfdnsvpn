@@ -35,6 +35,13 @@ See README for full list and physical TV measurement notes.
 4. Verify against existing tests and contracts.
 5. State what is measured vs. what needs real Android TV validation.
 
+## Hard Rules for All Agents (mandatory)
+- **Branches**: Never create or push branches whose name contains an AI name, model name, tool name, or any non-owner identifier (examples forbidden: `claude-*`, `gpt-*`, `grok-*`, `ai-*`, `agent-*`, `copilot-*`). Use only descriptive, owner-neutral names.
+- **Authorship / signing**: Never commit, sign, or set author/committer to any name, email, or identity that is not the repository owner (`ReinierTutoriales`). Do not use AI names, tool names, or third-party identities in commit messages, trailers, or metadata.
+- **Write only what is verified**: Read the relevant files, tests, contracts, and documentation before proposing or writing any change. Do not write code, comments, or docs for the sake of writing. Every addition must be the minimal change that solves a demonstrated need and is traceable to existing code or a clearly labeled assumption.
+- **Documentation**: Update or create documentation only when it reflects verified current behavior. Do not invent APIs, policies, or guarantees. Prefer updating existing docs over creating new ones. Keep docs short, precise, and consistent with the code.
+- **Optimal code**: Prefer the simplest correct solution that matches existing style and patterns. Avoid speculative refactors, unused helpers, extra abstractions, or "improvements" without measured benefit. Verify against tests and contracts before considering the change complete.
+
 ## Rules
 - Match existing Rust/Kotlin style and patterns.
 - Keep changes focused; do not touch unrelated files.
@@ -43,4 +50,4 @@ See README for full list and physical TV measurement notes.
 - Respect authorship rules in CLAUDE.md (commits as ReinierTutoriales only).
 
 ## Skills
-Use skills from `.agents/skills/` when relevant, especially `precise-coding` for any code change.
+Use skills from `.agents/skills/` when relevant, especially `precise-coding` and `agent-governance` for any code or documentation change.
